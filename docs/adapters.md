@@ -1,6 +1,6 @@
 # 기존 환경과 연결하는 경계
 
-own-harness의 필수 구성은 Python 표준 라이브러리, Git, 로컬 Codex 훅과 pstack-codex 스킬입니다. 외부 도구의 이름이 문서에 있다는 이유로 설치됐거나 실행됐다고 가정하지 않습니다. 아래 선택 항목은 자동 설치·실행·마이그레이션을 제공하지 않습니다.
+own-harness의 필수 구성은 Bun의 JavaScript 런타임과 내장 모듈, Git, 로컬 Codex 훅과 pstack-codex 스킬입니다. 외부 도구의 이름이 문서에 있다는 이유로 설치됐거나 실행됐다고 가정하지 않습니다. 아래 선택 항목은 자동 설치·실행·마이그레이션을 제공하지 않습니다.
 
 ## Git과 Codex
 
@@ -8,7 +8,9 @@ own-harness의 필수 구성은 Python 표준 라이브러리, Git, 로컬 Codex
 
 Git wrapper는 기존 훅의 인자·작업 경로·표준 입력을 전달하고 기존 훅의 실패를 유지합니다. 저장소별 commit 규칙·lint·identity 정책은 기존 훅이 계속 담당합니다. own-harness는 일반 Git 작성자 정보와 WORK 전달 상태를 검사하며 제품별 브랜치·티켓 규칙을 추가하지 않습니다.
 
-checkout의 `.codex/hooks.json`에는 기존 항목을 보존하며 `UserPromptSubmit`·`PreToolUse`를 설치된 `pr-guard.py`의 같은 진입점에 연결합니다. 진입점은 WORK 통제 이벤트도 전달합니다. 전역 훅은 바꾸지 않습니다. 여러 설정 계층에서 매칭된 훅이 함께 실행될 수 있으므로 `/hooks`에서 실제 출처를 확인하세요. 동일 계층의 inline TOML 훅과 `hooks.json`도 함께 로드될 수 있습니다. 설치 중 충돌로 판정되면 기존 정의를 검토해 정리해야 합니다. [공식 훅 문서](https://learn.chatgpt.com/docs/hooks), [공식 설정 문서](https://learn.chatgpt.com/docs/config-file/config-advanced)
+checkout과 `work/<task>` 작업 폴더의 `.codex/hooks.json`에는 기존 항목을 보존하며 `UserPromptSubmit`·`PreToolUse`를 설치된 `pr-guard.js`의 같은 진입점에 연결합니다. 진입점은 WORK 통제 이벤트도 전달합니다. 전역 훅은 바꾸지 않습니다. 여러 설정 계층에서 매칭된 훅이 함께 실행될 수 있으므로 `/hooks`에서 실제 출처를 확인하세요. 동일 계층의 inline TOML 훅과 `hooks.json`도 함께 로드될 수 있습니다. 설치 중 충돌로 판정되면 기존 정의를 검토해 정리해야 합니다. [공식 훅 문서](https://learn.chatgpt.com/docs/hooks), [공식 설정 문서](https://learn.chatgpt.com/docs/config-file/config-advanced)
+
+`prepare`는 등록된 Git worktree로 확인한 작업 폴더에만 로컬 설정을 연결합니다. `fork`는 병렬 구현 경로를 만들고 WORK에 담당·범위를 기록하며, 모델이나 별도 에이전트 프로세스를 실행하지 않습니다. 실제 위임은 현재 세션의 native subagent 도구가 담당합니다.
 
 프로젝트 신뢰와 현재 훅 정의에 대한 신뢰는 별도 조건입니다. 설치기는 둘 다 자동 승인하지 않습니다. 실제 클라이언트·프로젝트에서 검토하고 동작을 확인해야 합니다. 합성 이벤트 fixture는 파서·승인 상태·차단 조건의 회귀 검사이며 실제 Codex 훅 활성화 증명이 아닙니다.
 

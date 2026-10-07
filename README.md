@@ -2,31 +2,35 @@
 
 Codex 작업에 pstack의 조사·설계·구현·독립 검증 흐름과 로컬 Git·승인 검사를 연결합니다. 단일 Git 저장소와 여러 저장소를 담은 상위 폴더에 설치할 수 있습니다.
 
-`pstack-codex`는 판단 절차를 안내하는 스킬입니다. 별도 runtime은 작업 계약, 단계 근거, 현재 파일·HEAD·index, 승인 상태를 검사합니다. 이 검사는 사고의 충분함, 제품 품질, 모든 파일 쓰기의 차단이나 OS 보안 격리를 보장하지 않습니다.
+`pstack-codex`는 판단 절차를 안내하는 스킬입니다. Bun으로 실행하는 JavaScript runtime은 작업 계약, 단계 근거, 현재 파일·HEAD·index, 승인 상태를 검사합니다. 명시적으로 아이디어를 위임한 작업은 추가로 필수 브리프와 단계별 근거 파일을 검사합니다. 이 검사는 사고의 충분함, 제품 품질, 모든 파일 쓰기의 차단이나 OS 보안 격리를 보장하지 않습니다.
 
 ## 설치
 
-대상 환경은 **Python 3.9 이상, Git 2.31 이상, macOS·Linux의 POSIX 셸**입니다. 외부 Python 패키지는 필요하지 않습니다. PR 생성과 비공개 GitHub 전송 확인에는 인증된 `gh`가 필요합니다. Windows와 다른 에이전트·클라우드 훅 호환은 지원 범위에 포함하지 않습니다.
+대상 환경은 **Bun 1.4.2 이상, Git 2.31 이상, macOS·Linux의 POSIX 셸**입니다. 외부 npm 패키지는 필요하지 않습니다. PR 생성과 비공개 GitHub 전송 확인에는 인증된 `gh`가 필요합니다. Windows와 다른 에이전트·클라우드 훅 호환은 지원 범위에 포함하지 않습니다.
+
+Bun이 없다면 [공식 설치 안내](https://bun.com/docs/installation)에 따라 설치한 뒤 `bun --version`으로 확인하세요.
+
+Git 파일명은 UTF-8을 지원하며 해석할 수 없는 바이트가 있으면 검증을 거절합니다. runtime은 프로세스 간 `.lock.d` 디렉터리 잠금을 사용합니다. 강제 종료 후 잠금이 남으면 실행 중인 프로세스가 없는지 확인한 뒤 오류에 표시된 잠금만 제거하세요.
 
 아래 경로와 작업 이름은 가상 예시입니다. 이미 Git 저장소가 있는 baseline 폴더에 설치하세요.
 
 ```sh
 git clone https://github.com/jadewisemann/own-harness.git
 cd own-harness
-python3 harness.py install /absolute/path/project
-python3 harness.py doctor /absolute/path/project
+bun harness.js install /absolute/path/project
+bun harness.js doctor /absolute/path/project
 ```
 
 여러 저장소가 있는 상위 폴더는 저장소 이름과 상대 경로를 명시합니다. 상위 폴더 자체는 Git 저장소가 아니어도 됩니다.
 
 ```sh
-python3 harness.py install /absolute/path/workspace --repo api=api --repo web=web
-python3 harness.py doctor /absolute/path/workspace
+bun harness.js install /absolute/path/workspace --repo api=api --repo web=web
+bun harness.js doctor /absolute/path/workspace
 ```
 
 설치기는 실행 파일을 대상의 `.harness/`에 복사합니다. 각 설치는 자기 runtime 사본을 사용하므로 배포 저장소의 checkout을 바꿔도 설치본이 곧바로 바뀌지 않습니다. 설정은 `.harness/config.json`에 저장됩니다. 기본 단일 저장소 매핑은 `{"schema":1,"repos":{"project":"."}}`입니다.
 
-설치기는 baseline과 등록된 worktree에 다음 항목을 연결합니다.
+설치기는 baseline, 작업 폴더와 등록된 worktree에 다음 항목을 연결합니다.
 
 - 기존 Git 훅을 이어 실행하는 로컬 wrapper와 제외 규칙.
 - checkout의 `.codex/hooks.json`, 자동 메모리 주입을 끄는 `.codex/config.toml`.
@@ -46,58 +50,115 @@ python3 harness.py doctor /absolute/path/workspace
 
 ## 작업 순서
 
+작업 하나를 폴더 하나로 관리합니다. 리드는 이 폴더에서 오케스트레이션하고, 실제 변경은 해당 레포 checkout에서 수행합니다.
+
+```text
+work/example-change/
+├── WORK.md
+├── repos/
+│   ├── api/
+│   └── web/
+├── .worktrees/
+│   └── api-payment/     # 병렬 구현이 필요할 때만 생성
+└── evidence/
+```
+
+`WORK.md` 하나에 계약·단계 근거와 병렬 작업의 담당·범위·결과를 보관합니다. 별도의 `agents/`, 에이전트별 `TASK.md`·`RESULT.md`는 만들지 않습니다. `work/<task>`에도 로컬 지침·스킬·훅이 연결됩니다. 이 폴더 자체는 제품 Git 저장소가 아니며 회사 공통 지식은 작업 폴더 밖의 기존 저장 위치를 참조합니다.
+
 설치한 뒤에는 **설치본**의 CLI를 사용합니다. 다음은 단일 저장소 예시입니다. 여러 저장소에서는 `--repo api`처럼 매핑 이름을 쓰고, 같은 작업에 필요한 저장소를 모두 등록한 뒤 계약을 확정합니다.
 
 ```sh
 workspace=/absolute/path/project
 runtime="$workspace/.harness/runtime"
 task=example-change
-checkout="$workspace/.worktrees/$task/project"
-python3 "$runtime/work.py" start "$task" --repo project --base origin/main --branch feat/example-change
+checkout="$workspace/work/$task/repos/project"
+bun "$runtime/work.js" start "$task" --repo project --base origin/main --branch feat/example-change
 ```
 
-`start`는 `.worktrees/<task>/<repo>`를 만들고 로컬 설정을 준비한 뒤 WORK에 등록합니다. baseline의 미커밋 변경은 복사하지 않습니다. base는 로컬에서 해석 가능한 ref여야 하므로 필요하면 먼저 허용된 fetch로 갱신하세요. 제품 변경과 전달은 등록된 worktree에서 진행합니다.
+`start`는 `work/<task>/repos/<repo>`를 만들고 작업 폴더와 checkout의 로컬 설정을 준비한 뒤 WORK에 등록합니다. baseline의 미커밋 변경은 복사하지 않습니다. base는 로컬에서 해석 가능한 ref여야 하므로 필요하면 먼저 허용된 fetch로 갱신하세요. 제품 변경과 전달은 등록된 worktree에서 진행합니다.
 
-1. `.harness/private/work/example-change/WORK.md`의 **작업 계약**에 목표·범위·완료 조건을 실제 요청으로 채웁니다. 같은 문서를 정본으로 유지합니다.
+1. `work/example-change/WORK.md`의 **작업 계약**에 목표·범위·완료 조건을 실제 요청으로 채웁니다. 같은 문서를 정본으로 유지합니다.
 2. 조사로 실제 호출·데이터 흐름을 확인합니다. 설계에서 선택 이유, 대안, 의존 작업, 병렬 가능 작업, 공유 상태 분리 방법을 정합니다. 각 단계의 실제 근거 파일을 만든 뒤 차례로 기록합니다.
 
 ```sh
-python3 "$runtime/work.py" record "$task" research --evidence "@$workspace/.harness/private/work/$task/research.md"
-python3 "$runtime/work.py" record "$task" design --evidence "@$workspace/.harness/private/work/$task/design.md"
+bun "$runtime/work.js" record "$task" research --evidence "@$workspace/work/$task/evidence/research.md"
+bun "$runtime/work.js" record "$task" design --evidence "@$workspace/work/$task/evidence/design.md"
 ```
 
 3. 허용된 변경을 구현하고 구현 근거를 기록합니다. 아래 파일 이름과 stage 대상은 예시이며 실제 변경에 맞춰 바꿉니다.
 
 ```sh
-python3 "$runtime/work.py" record "$task" implementation --evidence "@$workspace/.harness/private/work/$task/implementation.md"
-git -C "$checkout" add -- src/example.py tests/test_example.py
+bun "$runtime/work.js" record "$task" implementation --evidence "@$workspace/work/$task/evidence/implementation.md"
+git -C "$checkout" add -- src/example.js tests/example.test.js
 ```
 
 4. stage한 상태에서 실제 검사와 독립 검토를 수행합니다. `verification.md`에 명령·결과·검토자·미확인 범위를 남긴 뒤 기록하고 전달 상태를 검사합니다.
 
 ```sh
-python3 "$runtime/work.py" record "$task" verification --evidence "@$workspace/.harness/private/work/$task/verification.md" --reviewer independent-reviewer
-python3 "$runtime/work.py" check --cwd "$checkout" --delivery
+bun "$runtime/work.js" record "$task" verification --evidence "@$workspace/work/$task/evidence/verification.md" --reviewer independent-reviewer
+bun "$runtime/work.js" check --cwd "$checkout" --delivery
 git -C "$checkout" commit -m "fix: handle example input"
 ```
 
 5. commit으로 HEAD가 바뀌면 영향을 받는 검사를 다시 실행하고 새 상태의 근거를 기록합니다. 그 뒤 push합니다.
 
 ```sh
-python3 "$runtime/work.py" record "$task" verification --evidence "@$workspace/.harness/private/work/$task/verification-after-commit.md" --reviewer independent-reviewer
-python3 "$runtime/work.py" check --cwd "$checkout" --delivery
+bun "$runtime/work.js" record "$task" verification --evidence "@$workspace/work/$task/evidence/verification-after-commit.md" --reviewer independent-reviewer
+bun "$runtime/work.js" check --cwd "$checkout" --delivery
 git -C "$checkout" push -u origin feat/example-change
 ```
 
 `record`는 입력한 보고를 저장하며 테스트를 대신 실행하지 않습니다. 예시 파일을 만들었다는 이유로 통과를 기록하지 마세요. `snapshot`도 실제 상태만 갱신하며 검증을 대신하지 않습니다. 검증 뒤 코드·index·HEAD·WORK 본문·실행 정책이 바뀌면 필요한 근거를 다시 얻습니다. `commit -a`나 `--only`의 임시 index 대신 명시적으로 stage한 일반 index를 사용합니다.
 
-이미 만든 worktree는 `.worktrees/<task>/<repo>` 구조와 Git 등록이 맞아야 합니다. `prepare`로 설치 상태를 연결하고 `init`으로 등록합니다. 경로 범위를 제한하려면 최초 `init` 때 `--scope`를 사용합니다.
+이미 만든 worktree는 `work/<task>/repos/<repo>` 구조와 Git 등록이 맞아야 합니다. `prepare`로 설치 상태를 연결하고 `init`으로 등록합니다. 경로 범위를 제한하려면 최초 `init` 때 `--scope`를 사용합니다.
 
 ```sh
-existing_checkout="$workspace/.worktrees/another-task/project"
-python3 "$workspace/.harness/harness.py" prepare "$existing_checkout"
-python3 "$runtime/work.py" init another-task --cwd "$existing_checkout" --base origin/main --scope src --scope tests
+existing_checkout="$workspace/work/another-task/repos/project"
+bun "$workspace/.harness/harness.js" prepare "$existing_checkout"
+bun "$runtime/work.js" init another-task --cwd "$existing_checkout" --base origin/main --scope src --scope tests
 ```
+
+## 필요한 경우에만 병렬 구현
+
+읽기 전용 조사·리뷰는 기준 커밋을 정해 진행합니다. 동시에 코드를 수정할 때만 `fork`로 필요한 레포의 별도 worktree를 만들고, 현재 세션의 native subagent에게 그 경로와 범위를 전달합니다. CLI가 에이전트를 자동 실행하지는 않습니다. `research`·`design` 근거와 필요한 사용자 승인을 먼저 갖춰야 합니다.
+
+```sh
+bun "$runtime/work.js" fork "$task" api-payment --repo project --owner payment-builder --scope src/payment
+bun "$runtime/work.js" status "$task"
+```
+
+생성 경로는 `work/<task>/.worktrees/api-payment`입니다. 작업용 통합 checkout의 깨끗한 현재 커밋에서 새 브랜치를 만들며, 미커밋 변경은 복사하지 않습니다. 한 checkout의 작성자는 한 명으로 유지합니다.
+
+구현 담당자가 변경을 stage하고 실제 검사를 마친 뒤 작업 폴더의 `evidence/`에 결과 근거를 작성합니다. `result`는 이 폴더 안의 파일만 받으므로 worktree를 정리해도 근거가 남습니다. 결과는 현재 파일·index·HEAD·계약에 묶이며, 로컬 커밋 후에는 새 HEAD에서 필요한 검사를 다시 수행하고 결과를 다시 기록합니다.
+
+```sh
+bun "$runtime/work.js" result "$task" api-payment --evidence "@$workspace/work/$task/evidence/api-payment.md"
+# 허용된 로컬 커밋과 새 HEAD 검사를 수행한 뒤 result를 다시 기록
+bun "$runtime/work.js" integrate "$task" api-payment
+bun "$runtime/work.js" clean "$task" api-payment
+```
+
+`integrate`는 검증 근거가 현재 상태와 맞는 깨끗한 worker 브랜치를 통합 checkout에 fast-forward로 반영합니다. 통합 브랜치가 앞서가 분기됐다면 worker에서 그 브랜치로 rebase하고 범위·검사 결과를 확인한 뒤 `result`를 다시 기록합니다. 충돌을 자동 해결하거나 실패를 통합 완료로 기록하지 않습니다.
+
+`clean`은 이미 통합된 깨끗한 worktree만 제거하며 결과 기록과 브랜치는 유지합니다. 병렬 작업의 로컬 커밋 검사는 최종 전달 검사와 구분됩니다. worker에서 직접 push·PR을 생성할 수 없으며, 리드는 모든 결과를 통합한 뒤 `implementation`·독립 `verification`을 기록하고 여러 레포의 최종 조합을 검사합니다. worker 결과가 바뀌면 이전 전체 검증을 재사용할 수 없습니다.
+
+통합된 결과는 당시 계약과 검사의 이력으로 남습니다. 이후 계약·설계를 바꾸면 현재 단계의 근거와 전체 검증을 다시 기록합니다. 과거 통합 기록을 새 설계의 검증으로 대신하지 않습니다.
+
+## 아이디어를 맡기는 모드
+
+사용자가 같은 Codex 채팅에서 다음처럼 **작업 ID와 아이디어를 포함한 메시지**를 직접 보내면 해당 작업에 위임 검사가 활성화됩니다. 작업 생성 전에도 보낼 수 있습니다.
+
+```text
+아이디어 위임 example-change 팀에서 쓸 간단한 작업 현황판을 만들어 줘
+```
+
+`UserPromptSubmit` 훅이 요청 원문과 세션·턴을 로컬 통제 기록에 저장합니다. 자연어의 모든 위임 표현을 자동 분류하지 않으며, 일반 작업에는 추가 검사를 적용하지 않습니다. 활성화된 작업에서는 `pstack-codex`를 읽고 다음 순서로 진행합니다.
+
+1. `start` 또는 `init`으로 작업을 등록합니다. 이미 있는 작업이면 `bun "$runtime/work.js" brief "$task"`로 원본 아이디어를 확인하고 브리프 틀을 추가합니다.
+2. WORK의 작업 계약(목표·범위·완료 조건)과 `## 위임 브리프`(대상 사용자·위임한 결정·제약·비목표)를 실제 요청으로 채웁니다. 필요한 정보만 질문하고, 사용자가 맡긴 결정은 그 범위에서 판단합니다.
+3. 조사 → 설계 → 구현 → 검증 순서로 실제 근거 파일을 만들고 `record ... --evidence @파일`로 연결합니다. 검증에는 독립 검토자도 기록합니다.
+
+브리프 누락·빈 항목·자리표시자·단계 누락·변경된 근거 파일은 단계/전달 검사에서 거절됩니다. 원본 위임 요청이나 브리프가 바뀌면 research부터 다시 기록해야 합니다. `작업 통제`와 `작업 이양`을 사용해도 위임 검사는 유지됩니다. 위임은 추가 실행 권한이나 PR 승인을 만들지 않습니다.
 
 ## 사람이 결정하는 모드
 
@@ -109,7 +170,7 @@ python3 "$runtime/work.py" init another-task --cwd "$existing_checkout" --base o
 | `작업 이양 example-change` | 현재 요청·계약 범위에서 pstack 판단을 재개합니다. |
 | `작업 승인 example-change <코드>` | human 모드에서 제시된 현재 계약만 승인합니다. |
 
-human 모드에서는 에이전트가 `python3 "$runtime/work.py" decision "$task"`로 계약과 코드를 보여 줍니다. 실제 사용자의 메시지를 `UserPromptSubmit` 훅이 수신해야 승인이 기록됩니다. 계약 변경 후에는 새 코드가 필요합니다. 하위 에이전트·합성 이벤트·승인 파일 편집으로 대신하지 않습니다. 통제 이양은 commit·push·PR·배포 권한을 새로 만들지 않습니다.
+human 모드에서는 에이전트가 `bun "$runtime/work.js" decision "$task"`로 계약과 코드를 보여 줍니다. 실제 사용자의 메시지를 `UserPromptSubmit` 훅이 수신해야 승인이 기록됩니다. 계약 변경 후에는 새 코드가 필요합니다. 하위 에이전트·합성 이벤트·승인 파일 편집으로 대신하지 않습니다. 통제 이양은 commit·push·PR·배포 권한을 새로 만들지 않습니다.
 
 ## PR 승인
 
@@ -133,13 +194,13 @@ fix: handle empty input
 ```
 
 ```sh
-python3 "$runtime/pr-guard.py" review /absolute/path/PR.md --cwd "$checkout" --base main
+bun "$runtime/pr-guard.js" review /absolute/path/PR.md --cwd "$checkout" --base main
 ```
 
 에이전트는 `PR.md`를 편집기로 열고 제목·본문 전체, head → base, HEAD, Draft 여부와 출력된 `PR 승인 <검토 코드>`를 보여 줍니다. 사용자가 같은 채팅에서 그 문구를 직접 보낸 뒤 아래 명령을 **단독 실행**하고 생성한 PR을 채팅에 연결합니다.
 
 ```sh
-python3 /absolute/path/project/.harness/runtime/pr-guard.py create
+bun /absolute/path/project/.harness/runtime/pr-guard.js create
 ```
 
 문서·HEAD·저장소·브랜치·base·Draft 상태가 바뀌거나 다른 요청이 들어오면 다시 review합니다. 실패 후 재시도 전에는 실제 PR 존재 여부를 조회합니다. 직접 `gh`·API·브라우저 생성이나 훅 이벤트 흉내로 우회하지 않습니다.
@@ -150,28 +211,32 @@ python3 /absolute/path/project/.harness/runtime/pr-guard.py create
 
 ```sh
 git pull --ff-only
-python3 harness.py update /absolute/path/project
-python3 harness.py doctor /absolute/path/project
+bun harness.js update /absolute/path/project
+bun harness.js doctor /absolute/path/project
 ```
 
 업데이트는 최초 원본과 사용자 변경을 보존합니다. runtime·정책 변경으로 기존 근거와 PR 승인이 낡으면 다시 검증·승인해야 합니다. human 통제를 자동으로 이양하지 않습니다. 바뀐 훅 정의도 Codex에서 다시 검토하세요.
 
+Python 설치본도 새 배포본의 `bun harness.js update`로 이전합니다. 관리 파일이 원래 설치 상태와 일치하는지 확인한 뒤 JS runtime과 Bun 훅으로 교체합니다. WORK·통제 기록은 보존하지만 실행 정책이 바뀌므로 기존 단계 근거와 승인은 다시 얻어야 합니다.
+
+기존 `.harness/private/work/<task>/WORK.md`와 `.worktrees/<task>/<repo>` 작업은 같은 위치에서 계속 사용할 수 있습니다. 업데이트가 Git 작업 폴더를 자동 이동하지 않습니다. 새 작업부터 `work/<task>/` 구조를 사용하며, 같은 ID의 WORK를 두 위치에 중복 만들면 거절합니다.
+
 사용을 끝내고 설치를 제거할 때만 다음 명령을 실행합니다.
 
 ```sh
-python3 harness.py uninstall /absolute/path/project
+bun harness.js uninstall /absolute/path/project
 ```
 
 제거는 원래 Git 훅·설정과 관리 문서를 복구합니다. WORK·통제 기록·증거와 사용자 branch·worktree는 유지하며, 남은 로컬 기록을 보호하는 제외 규칙도 유지할 수 있습니다. 관리 파일에 사용자 변경이 있으면 충돌을 해결한 뒤 다시 실행하세요.
 
 ## 공개 패키지와 비공개 상태
 
-공개 저장소에는 재사용 코드·스킬·템플릿·가상 예제만 둡니다. 설치본의 `.harness/private/`에는 WORK, 계약 기준점, 통제·PR 승인, 설치 원본 정보가 들어갑니다. 이 상태와 실제 내부 경로·식별자는 공개 저장소, PR 본문, 외부 공유 문서에 복사하지 마세요. PR에는 문제·변경 동작·관련 검증 결과만 선별합니다.
+공개 저장소에는 재사용 코드·스킬·템플릿·가상 예제만 둡니다. `work/<task>/`에는 WORK, 작업용 checkout, 병렬 worktree와 근거 파일이 들어갑니다. 설치본의 `.harness/private/`에는 통제·PR 승인과 설치 원본 정보가 들어갑니다. 이 상태와 실제 내부 경로·식별자는 공개 저장소, PR 본문, 외부 공유 문서에 복사하지 마세요. PR에는 문제·변경 동작·관련 검증 결과만 선별합니다.
 
 알려진 내부 WORK/private 이력의 push는 **실제 push URL이 가리키는 GitHub 저장소의 `private=true`가 확인될 때만** 허용합니다. 다른 호스트나 확인할 수 없는 대상은 거절합니다. 일반 코드의 일반 Git 원격 전송은 이 제한과 구분합니다. 텍스트·이력 검사는 모든 자연어 정보 유출을 판별하지 못합니다.
 
 ```sh
-python3 "$runtime/work.py" public-text /absolute/path/PR.md
+bun "$runtime/work.js" public-text /absolute/path/PR.md
 ```
 
 OKF·Graft·RRSI는 이미 있는 환경에서 선택적으로 연결하는 대상입니다. 이 패키지가 설치하거나 실행하지 않습니다. 역할과 확인할 조건은 [adapters.md](docs/adapters.md)를 참고하세요.
@@ -181,7 +246,7 @@ OKF·Graft·RRSI는 이미 있는 환경에서 선택적으로 연결하는 대�
 배포 저장소에서 실행합니다.
 
 ```sh
-python3 tests/run.py
+bun test
 ```
 
 검사는 임시 Git 저장소와 가짜 `gh`, 격리된 합성 이벤트를 사용합니다. 실제 Git 동작의 회귀 검사는 포함하지만 실제 Codex 훅 활성화, 사용자 신뢰 승인, GitHub PR 생성이나 호스팅된 Linux CI 성공을 증명하지 않습니다. 실행 결과와 실제 환경 확인은 구분해서 기록하세요.

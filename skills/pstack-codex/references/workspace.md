@@ -14,9 +14,9 @@
 
 ## 설치본과 작업 폴더
 
-workspace의 `.harness/config.json`에 있는 명시적 저장소 매핑을 사용한다. 저장소 이름에 특별한 의미를 부여하지 않는다. 작업 도구는 `<workspace>/.harness/runtime/work.py`, PR 도구는 같은 폴더의 `pr-guard.py`다. 배포 checkout이나 전역 도구를 대신 호출하지 않는다. 상세 인자는 설치본의 `--help`로 확인한다.
+workspace의 `.harness/config.json`에 있는 명시적 저장소 매핑을 사용한다. 저장소 이름에 특별한 의미를 부여하지 않는다. 작업 도구는 `<workspace>/.harness/runtime/work.js`, PR 도구는 같은 폴더의 `pr-guard.js`다. 배포 checkout이나 전역 도구를 대신 호출하지 않는다. 명령 목록은 설치본의 `--help`로, 인자는 아래 표로 확인한다.
 
-제품 변경과 전달은 Git에 등록된 `.worktrees/<task>/<repo>`에서 한다. baseline에서는 제품을 전달하지 않는다. 작업당 `.harness/private/work/<task>/WORK.md` 하나가 정본이다. 기존 본문을 보존하고 `own-harness-work:v1` 관리 블록을 임의로 고치지 않는다.
+제품 변경과 전달은 Git에 등록된 `work/<task>/repos/<repo>`에서 한다. baseline에서는 제품을 전달하지 않는다. 작업당 `work/<task>/WORK.md` 하나가 정본이다. 기존 본문을 보존하고 `own-harness-work:v1` 관리 블록을 임의로 고치지 않는다.
 
 | 명령 | 역할 |
 | --- | --- |
@@ -26,11 +26,27 @@ workspace의 `.harness/config.json`에 있는 명시적 저장소 매핑을 사�
 | `record TASK PHASE --evidence TEXT_OR_@FILE [--reviewer NAME]` | 실제 단계 근거를 저장한다. 검사 명령 자체를 실행하지 않는다. |
 | `check --cwd CHECKOUT --delivery` | 작업 연결, 네 단계 근거, 현재 상태와 사람 통제를 검사한다. |
 | `decision TASK` | human 모드에서 현재 계약과 사용자 승인 코드를 제시한다. |
+| `brief TASK` | 명시적으로 위임된 원본 아이디어를 보여 주고 WORK에 필수 브리프 틀을 추가한다. |
+| `fork TASK NAME --repo REPO --owner OWNER --scope PATH ...` | 설계와 승인 확인 후 통합 checkout의 커밋에서 병렬 구현용 worktree를 만든다. |
+| `result TASK NAME --evidence @FILE` | 작업 폴더의 `evidence/`에 둔 실제 검사 결과를 현재 파일·index·HEAD·계약에 연결한다. |
+| `integrate TASK NAME` | 현재 결과 근거와 깨끗한 상태를 확인하고 통합 checkout에 fast-forward한다. |
+| `clean TASK NAME` | 이미 통합된 깨끗한 worktree를 제거하고 결과·브랜치는 보존한다. |
+| `status TASK` | WORK에 저장된 통합 레포와 병렬 작업의 담당·범위·상태·결과를 보여 준다. |
 | `public-text FILE` | 외부 문서에서 알려진 내부 메타데이터를 검사한다. |
 
-직접 만든 worktree에는 `<workspace>/.harness/harness.py prepare CHECKOUT`을 먼저 적용한다. 등록된 common-dir와 레이아웃이 맞아야 한다. `start`는 이 준비를 호출한다. base ref는 시작 때 고정 SHA로 기록하며 이후 브랜치 이동을 이유로 몰래 바꾸지 않는다. 재개할 때 실제 경로·branch·HEAD·dirty 상태를 기록과 다시 대조한다.
+직접 만든 worktree에는 `<workspace>/.harness/harness.js prepare CHECKOUT`을 먼저 적용한다. 등록된 common-dir와 레이아웃이 맞아야 한다. `start`는 이 준비를 호출한다. base ref는 시작 때 고정 SHA로 기록하며 이후 브랜치 이동을 이유로 몰래 바꾸지 않는다. 재개할 때 실제 경로·branch·HEAD·dirty 상태를 기록과 다시 대조한다.
+
+리드는 `work/<task>`에서 WORK와 근거를 관리한다. 구현 checkout은 `repos/<repo>`, 필요할 때만 만드는 병렬 구현 checkout은 `.worktrees/<name>`이다. 근거는 `evidence/`에 두고 에이전트별 문서 계층을 추가하지 않는다. `fork`는 worktree만 준비하므로 native subagent에 목표·경로·범위·완료 조건을 별도로 전달한다. 읽기 전용 조사·리뷰에는 전용 worktree를 기본 생성하지 않는다.
+
+서브에이전트는 자기 checkout의 실제 검사를 마친 뒤 `result --evidence @FILE`로 보고한다. 검증된 로컬 커밋은 허용하지만 worker에서 직접 push·PR을 하지 않는다. 커밋 뒤 결과 근거를 갱신하고 리드가 `integrate`한다. fast-forward가 불가능하면 최신 통합 브랜치로 rebase하고 다시 검사·기록한다. 전체 verification은 모든 결과를 통합한 뒤 새로 수행한다. `clean`은 통합된 깨끗한 checkout만 제거한다. 미완료·변경된 결과나 기록을 삭제해 전달 검사를 우회하지 않는다.
+
+worker의 근거 파일은 정리되는 checkout 밖의 `work/<task>/evidence/`에 둬야 한다. 통합 결과에는 당시 계약과 검증을 보존한다. 이후 계약·설계를 수정하면 새 단계 근거와 전체 verification을 얻으며, 과거 통합 결과를 새 설계의 검증으로 취급하지 않는다.
+
+기존 `.harness/private/work/<task>/WORK.md`와 `.worktrees/<task>/<repo>`는 위치를 유지한다. 동일 작업 ID의 WORK를 새 위치에 복제하지 않는다. 새 작업은 새 구조로 시작한다.
 
 ## 단계와 전달 순서
+
+사용자의 `아이디어 위임 TASK <아이디어 원문>`을 실제 `UserPromptSubmit` 훅이 받으면 작업 생성 전부터 해당 ID에 위임 검사를 저장한다. `start`/`init`은 WORK에 `## 위임 브리프`를 추가하며, 기존 작업에는 `brief TASK`를 사용한다. 대상 사용자·위임한 결정·제약·비목표를 채운 뒤 진행한다. 원본 요청은 통제 기록이 정본이며 브리프와 함께 계약 해시에 연결된다. 위임된 모든 단계는 `--evidence @파일`이 필수다. 요청·브리프 변경은 이전 단계 근거를 무효화한다. 일반 작업에는 이 추가 요건을 적용하지 않는다. `작업 통제`·`작업 이양`은 위임 요건을 해제하지 않는다.
 
 1. worktree를 생성·등록한다. WORK의 작업 계약에 목표·범위·완료 조건을 실제 요청으로 채운다. 여러 저장소를 다룬다면 먼저 모두 등록한다.
 2. 실제 호출·데이터 흐름과 원인 근거를 조사하고 `research`를 기록한다.
@@ -65,9 +81,9 @@ workspace의 `.harness/config.json`에 있는 명시적 저장소 매핑을 사�
 PR 준비가 허용된 작업은 코드·검증·commit·push를 끝낸 뒤 실제 checkout을 지정해 실행한다.
 
 ```sh
-python3 /absolute/workspace/.harness/runtime/pr-guard.py review /absolute/path/PR.md --cwd /absolute/workspace/.worktrees/task/project --base main
+bun /absolute/workspace/.harness/runtime/pr-guard.js review /absolute/path/PR.md --cwd /absolute/workspace/work/task/repos/project --base main
 ```
 
 기본은 Draft이며 일반 PR은 review에 `--ready`를 지정한다. 문서를 Codex 편집기로 열고 제목·본문 전체, head → base, HEAD, Draft 여부를 보여 준다. 출력된 `PR 승인 <검토 코드>`를 요청한다.
 
-실제 사용자가 같은 채팅에서 승인하고 훅이 수신한 뒤 설치본의 `pr-guard.py create`를 단독 실행하고 생성 PR을 채팅에 연결한다. 문서·HEAD·저장소·브랜치·base·Draft 변경이나 다른 요청이 들어오면 재검토한다. 실패 뒤 재시도 전 실제 PR 존재 여부를 조회한다. 직접 PR 생성, 승인 파일 조작, 훅 이벤트 흉내로 우회하지 않는다.
+실제 사용자가 같은 채팅에서 승인하고 훅이 수신한 뒤 설치본의 `pr-guard.js create`를 단독 실행하고 생성 PR을 채팅에 연결한다. 문서·HEAD·저장소·브랜치·base·Draft 변경이나 다른 요청이 들어오면 재검토한다. 실패 뒤 재시도 전 실제 PR 존재 여부를 조회한다. 직접 PR 생성, 승인 파일 조작, 훅 이벤트 흉내로 우회하지 않는다.
