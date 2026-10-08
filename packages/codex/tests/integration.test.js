@@ -117,8 +117,8 @@ async function single_flow(package_root, temp) {
         return work(args, reject);
     };
     work(['start', task, '--repo', 'project', '--base', 'main', '--branch', 'test/single-flow']);
-    const tree = path.join(workspace, 'work', task, 'repos', 'project');
-    const document = path.join(workspace, 'work', task, 'WORK.md');
+    const tree = path.join(workspace, 'work', task, 'project');
+    const document = path.join(workspace, 'work', task, 'task.md');
     fill_contract(document);
     assert.ok(fs.statSync(path.join(tree, '.git')).isFile());
     for (const checkout of [workspace, tree]) {
@@ -280,11 +280,11 @@ function multi_flow(package_root, temp) {
         assert.deepEqual(saved(path.join(baseline, 'AGENTS.md')), originals[name]['AGENTS.md']);
         assert.equal(run(baseline, ['git', 'diff', '--name-only']), '');
         run(workspace, [process.execPath, path.join(workspace, '.harness/runtime/work.js'), 'start', 'paired', '--repo', name, '--base', 'main', '--branch', 'test/paired']);
-        const tree = path.join(workspace, 'work/paired/repos', name);
+        const tree = path.join(workspace, 'work/paired', name);
         assert.equal(run(tree, ['git', 'rev-parse', '--path-format=absolute', '--git-common-dir']), path.join(baseline, '.git'));
         assert.equal(run(tree, ['git', 'diff', '--name-only']), '');
     }
-    const record = path.join(workspace, 'work/paired/WORK.md');
+    const record = path.join(workspace, 'work/paired/task.md');
     fill_contract(record);
     const managed = path.join(workspace, '.harness/templates/AGENTS.fragment.md');
     const prior = saved(managed);
@@ -299,7 +299,7 @@ function multi_flow(package_root, temp) {
     run(temp, [process.execPath, harness, 'uninstall', workspace]);
     for (const [name, relative] of Object.entries(mapping)) {
         restore_check(path.join(workspace, relative), originals[name]);
-        const tree = path.join(workspace, 'work/paired/repos', name);
+        const tree = path.join(workspace, 'work/paired', name);
         assert.ok(fs.statSync(path.join(tree, '.git')).isFile());
         assert.equal(run(tree, ['git', 'config', '--get', 'core.hooksPath']), '.husky');
         assert.deepEqual(fs.readFileSync(path.join(tree, 'AGENTS.md')), originals[name]['AGENTS.md'][0]);
@@ -364,9 +364,9 @@ test('worker delivery passes locally but Git push and PR review/create are denie
         const work = args => run(workspace, [process.execPath, path.join(runtime, 'work.js'), ...args]);
         work(['start', 'publish', '--repo', 'project', '--base', 'main', '--branch', 'codex/publish']);
         const task_root = path.join(workspace, 'work/publish');
-        const lead = path.join(task_root, 'repos/project');
-        const worker = path.join(task_root, '.worktrees/author');
-        fill_contract(path.join(task_root, 'WORK.md'));
+        const lead = path.join(task_root, 'project');
+        const worker = path.join(task_root, '.sub-workspace/author/project');
+        fill_contract(path.join(task_root, 'task.md'));
         work(['record', 'publish', 'research', '--evidence', 'Inspected fixture files and publishing constraints']);
         work(['record', 'publish', 'design', '--evidence', 'Assigned a.txt to one worker and reserved delivery for the lead']);
         work(['fork', 'publish', 'author', '--repo', 'project', '--owner', 'fixture-author', '--scope', 'a.txt']);

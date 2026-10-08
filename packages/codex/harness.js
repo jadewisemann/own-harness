@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-export const RUNTIME = ['harness_common.js', 'work.js', 'work-hook.js', 'check-workspace.js', 'pr-guard.js', 'delegation.js'];
+export const RUNTIME = ['harness_common.js', 'steering-state.js', 'steering.js', 'work.js', 'work-hook.js', 'check-workspace.js', 'pr-guard.js', 'delegation.js'];
 export const SKILL = ['SKILL.md', 'LICENSE', 'references/workflows.md', 'references/principles.md', 'references/upstream.md', 'references/workspace.md'];
 export const PAYLOAD = ['harness.js', 'templates/AGENTS.fragment.md', ...RUNTIME.map(p => `runtime/${p}`), ...SKILL.map(p => `skills/pstack-codex/${p}`)];
 const LEGACY_PAYLOAD = ['harness.py', 'runtime/harness_common.py', 'runtime/work.py', 'runtime/work-hook.py', 'runtime/check-workspace', 'runtime/pr-guard.py'];
@@ -164,16 +164,22 @@ export function load_manifest(root) {
 }
 function task_context(root, value) {
   const relative = path.relative(root, absolute(value)).split(path.sep);
-  if (relative.length !== 2 || relative[0] !== 'work' || !/^[a-z0-9][a-z0-9._-]{0,79}(?![\s\S])/.test(relative[1])) fail(`invalid task context path: ${value}`);
+  if (![2, 4].includes(relative.length) || relative[0] !== 'work' || !/^[a-z0-9][a-z0-9._-]{0,79}(?![\s\S])/.test(relative[1]) || (relative.length === 4 && (relative[2] !== '.sub-workspace' || !/^[a-z0-9][a-z0-9._-]{0,79}(?![\s\S])/.test(relative[3])))) fail(`invalid task context path: ${value}`);
   const context = path.join(root, ...relative);
-  for (const folder of [path.join(root, 'work'), context]) if (exists(path.join(folder, '.git'))) fail(`task context conflicts with an existing Git repository: ${folder}`);
+  for (const folder of relative.map((_, index) => path.join(root, ...relative.slice(0, index + 1)))) if (exists(path.join(folder, '.git'))) fail(`task context conflicts with an existing Git repository: ${folder}`);
   return context;
 }
 export function task_root_for(root, checkout, repository) {
   const parts = path.relative(root, checkout).split(path.sep);
-  if (parts.length !== 4 || parts[0] !== 'work' || !['repos', '.worktrees'].includes(parts[2])) return null;
+  if (parts[0] !== 'work') return null;
+  const direct = parts.length === 3;
+  if (direct && ['evidence', 'repos'].includes(parts[2].toLowerCase())) fail('direct task checkout uses a reserved repository name');
+  const legacy = parts.length === 4 && ['repos', '.worktrees'].includes(parts[2]);
+  const worker = parts.length === 5 && parts[2] === '.sub-workspace';
+  if (!direct && !legacy && !worker) return null;
   const context = task_context(root, path.join(root, parts[0], parts[1]));
-  if (parts[2] === 'repos' && parts[3] !== repository) fail(`task checkout repository name does not match its registered repository: ${checkout}`);
+  if ((direct || worker || parts[2] === 'repos') && parts.at(-1) !== repository) fail(`task checkout repository name does not match its registered repository: ${checkout}`);
+  if (worker) task_context(root, path.dirname(checkout));
   if (parts[2] === '.worktrees' && !/^[a-z0-9][a-z0-9._-]{0,79}(?![\s\S])/.test(parts[3])) fail(`invalid worker checkout name: ${checkout}`);
   return context;
 }
@@ -182,7 +188,10 @@ export function task_roots(root, repos, manifest = null) {
   for (const [name, repo] of Object.entries(repos)) for (const tree of repo.trees) {
     if (tree === repo.path) continue;
     const context = task_root_for(root, tree, name);
-    if (context !== null) active.add(context);
+    if (context !== null) {
+      active.add(context);
+      if (path.relative(context, tree).split(path.sep)[0] === '.sub-workspace') active.add(task_context(root, path.dirname(tree)));
+    }
   }
   const stored = manifest?.task_roots ?? [];
   if (!Array.isArray(stored)) fail('stored task contexts must be a list');
@@ -340,7 +349,10 @@ export function build(root, source, mapping, manifest, selected = null) {
     targets = new Set([selected]);
     for (const [name, repo] of Object.entries(repos)) if (repo.trees.includes(selected) && selected !== repo.path) {
       const context = task_root_for(root, selected, name);
-      if (context !== null) targets.add(context);
+      if (context !== null) {
+        targets.add(context);
+        if (contexts.has(path.dirname(selected))) targets.add(path.dirname(selected));
+      }
     }
   }
   for (const repo of Object.values(repos)) for (const tree of repo.trees) check_tracked(tree, root);

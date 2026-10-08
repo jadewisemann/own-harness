@@ -26,10 +26,9 @@ export function git(...args) {
 }
 export function internal_path(file) {
     const parts = file.split('/');
-    return ['WORK.md', 'WORK.metadata.json', 'WORK.metadata.yaml'].includes(path.posix.basename(file)) ||
+    return ['WORK.md', 'task.md', 'WORK.metadata.json', 'WORK.metadata.yaml'].includes(path.posix.basename(file)) ||
         (parts.length > 1 && parts[0] === '.harness' && parts[1].startsWith('private')) ||
-        (parts.length > 2 && parts[0] === 'work' && common.TASK_RE.test(parts[1]) &&
-            ['evidence', '.worktrees', 'repos'].includes(parts[2]));
+        (parts[0] === 'work' && common.private_task_pattern().test(file));
 }
 export function github_repo(remote) {
     let match = remote.match(/^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/);

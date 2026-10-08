@@ -29,9 +29,9 @@ test('one WORK manages optional worker checkouts, local results, integration and
   const work = (...args) => run([process.execPath, runtime, ...args]);
   const denied = (...args) => run([process.execPath, runtime, ...args], { reject: true });
   const taskRoot = path.join(root, 'work/change');
-  const workFile = path.join(taskRoot, 'WORK.md');
-  const lead = path.join(taskRoot, 'repos/project');
-  const worker = name => path.join(taskRoot, '.worktrees', name);
+  const workFile = path.join(taskRoot, 'task.md');
+  const lead = path.join(taskRoot, 'project');
+  const worker = name => path.join(taskRoot, '.sub-workspace', name, 'project');
   const data = () => JSON.parse(fs.readFileSync(workFile, 'utf8').match(/<!-- own-harness-work:v1 -->\n```json\n([\s\S]*?)\n```/)[1]);
   const evidence = (name, text = 'Executed the fixture checks and inspected the changed user path.\n') => {
     const file = path.join(taskRoot, 'evidence', name + '.md');

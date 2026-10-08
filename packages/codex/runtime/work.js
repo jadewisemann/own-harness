@@ -8,6 +8,7 @@ import { parseArgs } from 'node:util';
 import * as common from './harness_common.js';
 import { require, digest, atomic_write, git } from './harness_common.js';
 import * as delegation from './delegation.js';
+import * as steering from './steering.js';
 
 export { common };
 export const ROOT = common.ROOT;
@@ -43,13 +44,13 @@ export function read_work(task) {
   require(is_file(file), `작업 기록이 없습니다: ${file}; work.js init을 먼저 실행하세요.`);
   const text = fs.readFileSync(file, 'utf8');
   const matches = [...text.matchAll(BLOCK)];
-  require(matches.length === 1 && text.split(BEGIN).length === 2 && text.split(END).length === 2, 'WORK.md metadata 블록이 없거나 중복·손상됐습니다.');
+  require(matches.length === 1 && text.split(BEGIN).length === 2 && text.split(END).length === 2, '작업 기록 metadata 블록이 없거나 중복·손상됐습니다.');
   let data;
-  try { data = JSON.parse(matches[0][1]); } catch { throw new Error('WORK.md JSON metadata를 읽을 수 없습니다.'); }
-  require(object(data) && data.task_id === task && data.schema === 1, 'WORK.md 작업 ID 또는 schema가 다릅니다.');
-  require(['pstack', 'human'].includes(data.control_mode) && PHASES.includes(data.phase), 'WORK.md 제어 모드 또는 단계가 잘못됐습니다.');
-  require(object(data.repos) && Object.keys(data.repos).length && object(data.phases), 'WORK.md repos/phases가 잘못됐습니다.');
-  require(data.workers === undefined || object(data.workers), 'WORK.md workers가 잘못됐습니다.');
+  try { data = JSON.parse(matches[0][1]); } catch { throw new Error('작업 기록 JSON metadata를 읽을 수 없습니다.'); }
+  require(object(data) && data.task_id === task && data.schema === 1, '작업 기록 작업 ID 또는 schema가 다릅니다.');
+  require(['pstack', 'human'].includes(data.control_mode) && PHASES.includes(data.phase), '작업 기록 제어 모드 또는 단계가 잘못됐습니다.');
+  require(object(data.repos) && Object.keys(data.repos).length && object(data.phases), '작업 기록 repos/phases가 잘못됐습니다.');
+  require(data.workers === undefined || object(data.workers), '작업 기록 workers가 잘못됐습니다.');
   data.workers ??= {};
   require(Object.keys(data.phases).every(phase => PHASES.includes(phase)), '알 수 없는 단계가 있습니다.');
   return [text, data];
@@ -59,7 +60,7 @@ export function body_of(text) { return text.replace(BLOCK, '').trim(); }
 export function contract(text) {
   const body = body_of(text);
   const match = /^## 작업 계약\s*\n([\s\S]*?)(?=^## |(?![\s\S]))/m.exec(body);
-  require(match, 'WORK.md에 ## 작업 계약과 목표·범위·완료 조건을 작성하세요.');
+  require(match, '작업 기록에 ## 작업 계약과 목표·범위·완료 조건을 작성하세요.');
   const value = match[1].trim();
   for (const label of ['목표', '범위', '완료 조건']) {
     const item = new RegExp('^\\s*(?:-\\s*)?' + escape_regex(label) + '\\s*:\\s*(\\S.*)$', 'm').exec(value);
@@ -71,7 +72,9 @@ export function contract(text) {
 export function contract_digest(text, data) {
   const repos = Object.fromEntries(Object.entries(data.repos).map(([name, repo]) => [name, Object.fromEntries(['checkout', 'branch', 'base_ref', 'base_sha', 'scope'].map(key => [key, repo[key] ?? null]))]));
   const delegated = delegation.request(read_control(data.task_id));
+  const steering_digest = steering.task_state(data.task_id).digest;
   return digest({ contract: contract(text), repos, policy: common.policy_digest(ROOT),
+    ...(steering_digest ? { steering: steering_digest } : {}),
     ...(delegated ? { delegation: delegated, brief: delegation.brief(body_of(text), delegated) } : {}) });
 }
 
@@ -95,7 +98,7 @@ export function save_control(task, value) { atomic_write(control_path(task), JSO
 export function human_gate(task, text, data, approval_required = true) {
   const control = read_control(task);
   const mode = control.mode ?? data.control_mode;
-  require(mode === data.control_mode, 'WORK.md의 control_mode와 runtime 통제 상태가 다릅니다.');
+  require(mode === data.control_mode, '작업 기록의 control_mode와 runtime 통제 상태가 다릅니다.');
   if (mode === 'human' && approval_required) {
     const approval = control.approval ?? {};
     require(approval.contract_sha256 === contract_digest(text, data) && approval.session_id === process.env.CODEX_THREAD_ID && approval.turn_id && approval.event === 'UserPromptSubmit', '사용자 통제 중입니다. work.js decision TASK 후 같은 채팅에서 작업 승인을 받으세요.');
@@ -142,7 +145,9 @@ export function fingerprint(task, repo, entry, expected_role = 'integration') {
   const index_rows = nul_names(index).filter(row => path.resolve(checkout, row.slice(row.indexOf('\t') + 1)) !== path.resolve(excluded));
   const head = git(checkout, 'rev-parse', 'HEAD');
   const dirty = Boolean(git(checkout, 'status', '--porcelain=v1', '--untracked-files=all'));
+  const steering_digest = steering.checkout_state(task, checkout, expected_role).digest;
   return { checkout, branch, head_sha: head, dirty, observed_at: now(), current_fingerprint: digest({ HEAD: head, index: index_rows, contents,
+    ...(steering_digest ? { steering: steering_digest } : {}),
     // Active worker results bind their contract separately; accepted commits remain historical receipts.
     ...(expected_role === 'integration' ? { work_body: fs.existsSync(work_path(task)) ? digest(body_of(fs.readFileSync(work_path(task), 'utf8'))) : null } : {}) }) };
 }
@@ -187,7 +192,7 @@ export function validate_phases(text, data, delivery = false) {
       validate_integrated_workers(data.task_id, text, data);
       require(record.workers_sha256 === workers_digest(data) || (!Object.keys(data.workers).length && record.workers_sha256 === undefined), 'worker 배정·결과가 최종 검증 뒤 바뀌었습니다. 통합 결과를 다시 검증하세요.');
       require(typeof record.reviewer === 'string' && record.reviewer.trim(), '독립 검토자와 실제 검사 결과 근거가 필요합니다.');
-      require(record.body_sha256 === digest(body_of(text)), 'WORK.md 본문이 검증 뒤 바뀌었습니다. 검증 근거를 다시 기록하세요.');
+      require(record.body_sha256 === digest(body_of(text)), '작업 기록 본문이 검증 뒤 바뀌었습니다. 검증 근거를 다시 기록하세요.');
       require(equal(record.fingerprints, Object.fromEntries(Object.entries(data.repos).map(([name, repo]) => [name, repo.current_fingerprint]))), '코드·HEAD·index·untracked 내용이 검증 뒤 바뀌었습니다. snapshot은 재검증을 대신하지 않습니다.');
       require(Object.values(data.repos).every(repo => repo.verified_fingerprint === repo.current_fingerprint), '저장소의 검증 fingerprint가 현재와 다릅니다.');
     }
@@ -240,7 +245,7 @@ export function start(task, repo, base, branch) {
   const base_sha = git(canonical, 'rev-parse', '--verify', base + '^{commit}');
   const configure = safe_path('.harness', 'harness.js');
   require(is_file(configure), '설치된 harness.js가 없어 작업 context를 적용할 수 없습니다.');
-  let target = safe_path('work', task, 'repos', repo);
+  let target = safe_path('work', task, repo), registered_target = false;
   if (is_file(work_path(task))) {
     const entries = read_work(task)[1].repos;
     if (Object.hasOwn(entries, repo)) {
@@ -248,8 +253,10 @@ export function start(task, repo, base, branch) {
       require(typeof registered.checkout === 'string' && fs.existsSync(registered.checkout), '등록된 통합 checkout이 없습니다. 기존 작업 경로를 복구한 뒤 start를 실행하세요.');
       require(registered.branch === branch && registered.base_ref === base && registered.base_sha === base_sha, '기존 통합 checkout의 branch·base 계약을 start로 바꿀 수 없습니다.');
       target = registered.checkout;
+      registered_target = true;
     }
   }
+  require(registered_target || !['evidence', 'repos'].includes(repo.toLowerCase()), '새 작업의 저장소 이름 evidence·repos는 작업 폴더와 충돌합니다.');
   if (fs.existsSync(target)) {
     const [, actual_repo, , actual_branch] = checkout_info(target, task);
     require(actual_repo === repo && actual_branch === branch, '기존 worktree의 저장소·branch가 요청과 다릅니다.');
@@ -305,10 +312,10 @@ function assignment(worker) {
 
 function worker_entry(task, data, name) {
   task_name(name);
-  require(Object.hasOwn(data.workers, name), 'WORK.md에 등록되지 않은 worker입니다.');
+  require(Object.hasOwn(data.workers, name), '작업 기록에 등록되지 않은 worker입니다.');
   const worker = data.workers[name];
   require(object(worker) && Object.hasOwn(data.repos, worker.repo), 'worker 저장소가 작업에 등록되지 않았습니다.');
-  require(worker.checkout === safe_path('work', task, '.worktrees', name), 'worker checkout이 작업 폴더와 다릅니다.');
+  require(common.worker_paths(ROOT, task, name, worker.repo).includes(worker.checkout), 'worker checkout이 작업 폴더와 다릅니다.');
   require(typeof worker.owner === 'string' && worker.owner.trim() && typeof worker.branch === 'string' && worker.branch && !worker.branch.startsWith('-'), 'worker owner 또는 branch가 잘못됐습니다.');
   require(typeof worker.base_sha === 'string' && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(worker.base_sha), 'worker 시작 commit이 잘못됐습니다.');
   require(Array.isArray(worker.scope) && worker.scope.length && equal(normalized_scopes(worker.checkout, worker.scope), worker.scope), 'worker scope가 잘못됐습니다.');
@@ -338,7 +345,7 @@ function delivery_entry(task, entry, base_sha = entry.base_sha) {
   for (const name of nul_names(history)) require(in_scope(name), `고정 base 이후 scope 밖 커밋 변경이 있습니다: ${name}`);
   const staged = git(checkout, 'diff', '--cached', '--no-renames', '--name-only', '-z', { binary: true });
   for (const name of nul_names(staged)) {
-    if (is_work(name)) require(git(checkout, 'show', ':' + name, { binary: true }).equals(fs.readFileSync(work_path(task))), 'staged WORK.md가 현재 계약·검증 기록과 다릅니다. WORK.md만 다시 stage하세요.');
+    if (is_work(name)) require(git(checkout, 'show', ':' + name, { binary: true }).equals(fs.readFileSync(work_path(task))), 'staged 작업 기록이 현재 계약·검증 기록과 다릅니다. 작업 기록만 다시 stage하세요.');
     require(in_scope(name), `scope 밖 staged 변경이 있습니다: ${name}`);
   }
   const untracked = git(checkout, 'ls-files', '--others', '--exclude-standard', '-z', '--', ...(scopes.length ? scopes : ['.']), { binary: true });
@@ -402,7 +409,7 @@ export function fork(task, name, repo, owner, scopes, branch = null) {
     const parent = data.repos[repo];
     fingerprint(task, repo, parent);
     clean_checkout(parent.checkout);
-    target = safe_path('work', task, '.worktrees', name);
+    target = common.worker_paths(ROOT, task, name, repo)[0];
     require(!fs.existsSync(target), 'worker 경로가 이미 있습니다.');
     scopes = normalized_scopes(parent.checkout, scopes);
     require(scopes.length && scopes.every(scope => within_scope(scope, parent.scope)), 'worker --scope는 작업 scope 안에서 하나 이상 지정하세요.');
@@ -481,7 +488,7 @@ export function clean(task, name) {
     worker.cleaned_at = now();
     save_work(task, text, data);
   });
-  console.log(`worker 정리: ${task}/${name}. branch와 WORK.md의 결과 기록은 보존했습니다.`);
+  console.log(`worker 정리: ${task}/${name}. branch와 작업 기록의 결과 기록은 보존했습니다.`);
 }
 
 export function status(task) {
@@ -516,7 +523,7 @@ export function record(task, phase, evidence, reviewer = null) {
     if (evidence.startsWith('@')) {
       const file = path.resolve(ROOT, evidence.slice(1));
       require(is_file(file) && !fs.lstatSync(file).isSymbolicLink() && contained(file), '근거 @파일은 워크스페이스 안의 실제 파일이어야 합니다.');
-      require(common.resolved_path(file) !== common.resolved_path(work_path(task)), '자기 WORK.md는 저장 때 바뀌므로 @근거 파일로 사용할 수 없습니다. 본문 조사 결과를 TEXT로 기록하세요.');
+      require(common.resolved_path(file) !== common.resolved_path(work_path(task)), '자기 작업 기록은 저장 때 바뀌므로 @근거 파일로 사용할 수 없습니다. 본문 조사 결과를 TEXT로 기록하세요.');
       require(fs.readFileSync(file, 'utf8').trim(), '빈 근거 파일을 사용할 수 없습니다.');
       Object.assign(entry, { file: common.resolved_path(file), file_sha256: digest(fs.readFileSync(file)) });
     }
@@ -537,6 +544,7 @@ export function record(task, phase, evidence, reviewer = null) {
 }
 
 export function check(cwd, delivery = false, publish = false) {
+  steering.require_execution(cwd);
   const [task, repo, checkout, , role, worker_name] = checkout_info(cwd);
   require(!publish || role !== 'worker', 'worker branch는 push·PR로 전달할 수 없습니다. 작업의 통합 checkout에서 전달하세요.');
   delivery ||= publish;
@@ -554,7 +562,7 @@ export function check(cwd, delivery = false, publish = false) {
       if (delivery || worker.result) validate_worker_result(task, text, data, worker_name);
       return;
     }
-    require(Object.hasOwn(data.repos, repo) && data.repos[repo].checkout === checkout, '현재 checkout이 해당 WORK.md에 등록되지 않았습니다.');
+    require(Object.hasOwn(data.repos, repo) && data.repos[repo].checkout === checkout, '현재 checkout이 해당 작업 기록에 등록되지 않았습니다.');
     human_gate(task, text, data, delivery);
     observe(task, data);
     validate_phases(text, data, delivery);
@@ -585,8 +593,8 @@ export function decision(task) {
 
 export function public_text(file) {
   const text = fs.readFileSync(file, 'utf8');
-  const forbidden = [/own-harness-work:v\d/, /\bWORK\.md\b/, /\.worktrees(?:\/|\\)/, new RegExp(escape_regex(ROOT)), /\.harness(?:\/|\\)private(?:\/|\\)/,
-    /(?:^|[\s("'`<]|\/)work[/\\][a-z0-9][a-z0-9._-]{0,79}[/\\](?:WORK\.md(?:\b|$)|(?:evidence|repos|\.worktrees)(?:[/\\]|(?=$|[\s"'`)\]<>])))/m,
+  const forbidden = [/own-harness-work:v\d/, /\b(?:WORK|task)\.md\b/, /(?:\.worktrees|\.sub-workspace)(?:\/|\\)/, new RegExp(escape_regex(ROOT)), /\.harness(?:\/|\\)private(?:\/|\\)/,
+    common.private_task_pattern(),
     /"(?:current_fingerprint|verified_fingerprint|contract_sha256|control_mode|assignment_sha256|planning_sha256|workers_sha256)"\s*:/,
     /^\s*(?:[-*]\s+|\|\s*)?["`]?\b(?:assignment_sha256|planning_sha256|workers_sha256)["`]?\s*[:=|]\s*/m];
   require(!forbidden.some(pattern => pattern.test(text)), '외부 문서에 내부 WORK metadata 또는 로컬 워크스페이스/worktree 경로가 포함됐습니다.');
@@ -594,6 +602,10 @@ export function public_text(file) {
 }
 
 export function hook(event) {
+  return steering.hook(event, control_hook(event));
+}
+
+function control_hook(event) {
   require(object(event), 'hook event는 JSON 객체여야 합니다.');
   const kind = event.hook_event_name;
   if (kind === 'PreToolUse') {
@@ -626,7 +638,7 @@ export function hook(event) {
         delete next.proposal;
         if (is_file(work_path(task))) {
           const [text, data] = read_work(task);
-          require(data.control_mode === next.mode, 'WORK.md의 control_mode와 runtime 통제 상태가 다릅니다.');
+          require(data.control_mode === next.mode, '작업 기록의 control_mode와 runtime 통제 상태가 다릅니다.');
           save_work(task, delegation.scaffold(text, delegated), data);
         }
         save_control(task, next);
@@ -696,8 +708,8 @@ export function main(argv = process.argv.slice(2)) {
     common.load_config(ROOT);
     if (command === 'hook') {
       const result = hook(JSON.parse(fs.readFileSync(0, 'utf8')));
-      if (result.decision === 'block') { console.error(result.reason); return 2; }
       console.log(JSON.stringify(result));
+      if (result.decision === 'block') { console.error(result.reason); return 2; }
     } else if (command === 'init') init(positionals[0], values.cwd, values.base, values.scope);
     else if (command === 'start') start(positionals[0], values.repo, values.base, values.branch);
     else if (command === 'record') record(positionals[0], positionals[1], values.evidence, values.reviewer);

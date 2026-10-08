@@ -370,4 +370,31 @@ describe('installation', () => {
     expect(tree_state(root)).toEqual(before);
     expect(fs.existsSync(path.join(task, '.codex'))).toBe(false);
   });
+  test('sub-workspace contexts reject Git ancestors, unowned files, symlinks and mismatched repos before writing', () => {
+    install();
+    const task = path.join(root, 'work/nested-worker'), sub = path.join(task, '.sub-workspace/reviewer'), checkout = path.join(sub, 'project');
+    fs.mkdirSync(sub, { recursive: true }); git(root, 'worktree', 'add', '-b', 'nested-worker', checkout);
+    for (const collision of [path.join(task, '.sub-workspace'), sub]) {
+      git(collision, 'init', '-q');
+      const before = tree_state(root);
+      expect(() => install({ selected: checkout })).toThrow('task context conflicts');
+      expect(tree_state(root)).toEqual(before);
+      fs.rmSync(path.join(collision, '.git'), { recursive: true });
+    }
+    for (const relative of ['.codex/config.toml', '.codex/hooks.json', 'AGENTS.override.md']) {
+      const file = path.join(sub, relative); put(file, relative.endsWith('.json') ? '{}' : '# user file');
+      const before = tree_state(root);
+      expect(() => install({ selected: checkout })).toThrow('unowned file'); expect(tree_state(root)).toEqual(before); fs.unlinkSync(file);
+    }
+    expect(() => harness.task_root_for(root, path.join(sub, 'wrong'), 'project')).toThrow('repository name');
+    expect(() => harness.task_root_for(root, path.join(task, 'wrong'), 'project')).toThrow('repository name');
+    for (const name of ['evidence', 'repos', 'Evidence', 'rEpOs']) expect(() => harness.task_root_for(root, path.join(task, name), name)).toThrow('reserved repository name');
+    const link = path.join(task, '.sub-workspace/alias'); fs.symlinkSync(sub, link);
+    expect(() => install({ selected: path.join(link, 'project') })).toThrow('registered checkout'); fs.unlinkSync(link);
+    install({ selected: checkout });
+    expect(harness.load_manifest(root).task_roots).toEqual([task, sub]);
+    fs.appendFileSync(path.join(sub, 'AGENTS.override.md'), '\nchanged');
+    expect(() => harness.doctor(root)).toThrow('drift');
+  });
+
 });

@@ -119,24 +119,45 @@ export function repo_paths(root = ROOT) {
   return Object.fromEntries(Object.entries(load_config(root).repos).map(([name, relative]) => [name, safe_path(root, relative)]));
 }
 
-export function task_work_path(task, root = ROOT) {
-  require(typeof task === 'string' && TASK_RE.test(task), '잘못된 작업 ID입니다.');
-  const current = safe_path(root, 'work', task, 'WORK.md');
-  const legacy = safe_path(root, '.harness', 'private', 'work', task, 'WORK.md');
-  require(!(fs.existsSync(current) && fs.existsSync(legacy)), '새 경로와 기존 경로에 같은 작업의 WORK.md가 있습니다. 하나의 작업 기록만 유지하세요.');
-  return fs.existsSync(legacy) ? legacy : current;
+// Repository names make direct task checkout paths private without hiding ordinary work/*.js sources.
+export function private_task_pattern(root = ROOT) {
+  const config = safe_path(root, '.harness', 'config.json');
+  const names = fs.existsSync(config) ? Object.keys(JSON.parse(fs.readFileSync(config, 'utf8')).repos ?? {}) : [];
+  require(names.every(name => NAME_RE.test(name)), '잘못된 저장소 이름입니다.');
+  const folders = ['evidence', 'repos', '.worktrees', '.sub-workspace', ...names].map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  return new RegExp('(?:^|[\\s("\'`<]|/)work[/\\\\][a-z0-9][a-z0-9._-]{0,79}[/\\\\](?:(?:(?:task|WORK)\\.md|state\\.json)(?:\\b|$)|(?:' + folders + ')(?:[/\\\\]|(?=$|[\\s"\'`)\\]<>])))', 'm');
 }
 
-function worker_registration(root, task, name) {
-  require(TASK_RE.test(name), '잘못된 worker 이름입니다.');
+export function task_work_path(task, root = ROOT) {
+  require(typeof task === 'string' && TASK_RE.test(task), '잘못된 작업 ID입니다.');
+  const current = safe_path(root, 'work', task, 'task.md');
+  const candidates = [current, safe_path(root, 'work', task, 'WORK.md'), safe_path(root, '.harness', 'private', 'work', task, 'WORK.md')];
+  const existing = candidates.filter(file => fs.existsSync(file));
+  require(existing.length <= 1, '같은 작업의 정본이 여러 위치에 있습니다. 하나의 작업 기록만 유지하세요.');
+  return existing[0] ?? current;
+}
+
+export function worker_paths(root, task, name, repo) {
+  require(TASK_RE.test(task) && TASK_RE.test(name) && NAME_RE.test(repo), '잘못된 worker 경로 이름입니다.');
+  return [safe_path(root, 'work', task, '.sub-workspace', name, repo), safe_path(root, 'work', task, '.worktrees', name)];
+}
+
+export function task_registration(root, task) {
   const text = fs.readFileSync(task_work_path(task, root), 'utf8');
   const blocks = [...text.matchAll(/<!-- own-harness-work:v1 -->\n```json\n([\s\S]*?)\n```\n<!-- \/own-harness-work -->/g)];
-  require(blocks.length === 1 && text.split('<!-- own-harness-work:v1 -->').length === 2 && text.split('<!-- /own-harness-work -->').length === 2, 'WORK.md metadata 블록이 없거나 중복·손상됐습니다.');
+  require(blocks.length === 1 && text.split('<!-- own-harness-work:v1 -->').length === 2 && text.split('<!-- /own-harness-work -->').length === 2, '작업 기록 metadata 블록이 없거나 중복·손상됐습니다.');
   const data = JSON.parse(blocks[0][1]);
-  require(object(data) && data.schema === 1 && data.task_id === task && object(data.workers) && Object.hasOwn(data.workers, name), 'WORK.md에 등록되지 않은 worker입니다.');
+  require(object(data) && data.schema === 1 && data.task_id === task && object(data.repos) && Object.keys(data.repos).length, '작업 등록이 잘못됐습니다.');
+  return data;
+}
+
+export function worker_registration(root, task, name) {
+  require(TASK_RE.test(name), '잘못된 worker 이름입니다.');
+  const data = task_registration(root, task);
+  require(object(data.workers) && Object.hasOwn(data.workers, name), '작업 기록에 등록되지 않은 worker입니다.');
   const worker = data.workers[name];
   require(object(worker) && typeof worker.repo === 'string' && typeof worker.checkout === 'string' && typeof worker.branch === 'string' && worker.state !== 'cleaned', 'worker 등록이 잘못됐거나 정리된 worker입니다.');
-  require(worker.checkout === safe_path(root, 'work', task, '.worktrees', name), 'worker checkout이 등록된 작업 경로와 다릅니다.');
+  require(worker_paths(root, task, name, worker.repo).includes(worker.checkout), 'worker checkout이 등록된 작업 경로와 다릅니다.');
   return worker;
 }
 
@@ -149,22 +170,26 @@ export function checkout_info(cwd, task = null, root = ROOT, allow_baseline = fa
   const repos = repo_paths(root);
   for (const [repo, canonical] of Object.entries(repos)) {
     if (checkout === resolved_path(canonical)) {
-      require(allow_baseline && task === null, 'baseline은 읽기 전용입니다. work/TASK/repos/REPO를 사용하세요.');
+      require(allow_baseline && task === null, 'baseline은 읽기 전용입니다. work/TASK/REPO를 사용하세요.');
       return [null, repo, checkout, branch, 'baseline', null];
     }
   }
   const relative = contained(checkout, root) ? path.relative(resolved_path(root), checkout).split(path.sep) : checkout.split(path.sep).slice(-3);
   let selected, repo, role = 'integration', worker_name = null;
   if (relative.length === 3 && relative[0] === '.worktrees') [, selected, repo] = relative;
+  else if (contained(checkout, root) && relative.length === 3 && relative[0] === 'work') {
+    [, selected, repo] = relative;
+    require(!['evidence', 'repos'].includes(repo.toLowerCase()), '통합 checkout의 저장소 이름이 작업 폴더와 충돌합니다.');
+  }
   else if (relative.length === 4 && relative[0] === 'work' && relative[2] === 'repos') [, selected, , repo] = relative;
-  else if (relative.length === 4 && relative[0] === 'work' && relative[2] === '.worktrees') {
+  else if (relative[0] === 'work' && ((relative.length === 4 && relative[2] === '.worktrees') || (relative.length === 5 && relative[2] === '.sub-workspace'))) {
     [, selected, , worker_name] = relative;
     require(TASK_RE.test(selected), '잘못된 작업 ID입니다.');
     const worker = worker_registration(root, selected, worker_name);
     require(worker.checkout === checkout && worker.branch === branch, 'worker의 checkout·branch가 등록과 다릅니다.');
     repo = worker.repo;
     role = 'worker';
-  } else throw new Error('baseline은 읽기 전용입니다. 등록된 work/TASK/repos/REPO 또는 worker worktree를 사용하세요.');
+  } else throw new Error('baseline은 읽기 전용입니다. 등록된 work/TASK/REPO 또는 worker worktree를 사용하세요.');
   require(TASK_RE.test(selected), '잘못된 작업 ID입니다.');
   require(task === null || selected === task, 'worktree 폴더 작업 ID가 요청과 다릅니다.');
   require(Object.hasOwn(repos, repo), 'config repos에 없는 저장소입니다.');
@@ -181,7 +206,7 @@ export function checkout_info(cwd, task = null, root = ROOT, allow_baseline = fa
 
 export function policy_digest(root = ROOT) {
   load_config(root);
-  const names = ['harness_common.js', 'work.js', 'delegation.js', 'work-hook.js', 'pr-guard.js', 'check-workspace.js'];
+  const names = ['harness_common.js', 'steering-state.js', 'steering.js', 'work.js', 'delegation.js', 'work-hook.js', 'pr-guard.js', 'check-workspace.js'];
   const files = [safe_path(root, '.harness', 'config.json'), ...names.map(name => safe_path(root, '.harness', 'runtime', name))];
   require(files.every(is_file), '설치된 runtime 파일이 누락됐습니다.');
   return digest(Object.fromEntries(files.map(file => [path.relative(root, file), digest(fs.readFileSync(file))])));

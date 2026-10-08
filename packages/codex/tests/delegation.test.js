@@ -43,7 +43,7 @@ test('explicit user delegation binds brief and file evidence through the install
   const work = (...args) => run([process.execPath, runtime, ...args]);
   const rejected = (args, reject) => run([process.execPath, runtime, ...args], { reject });
   const controlPath = task => path.join(root, '.harness/private/work-control', task + '.json');
-  const workPath = task => path.join(root, 'work', task, 'WORK.md');
+  const workPath = task => path.join(root, 'work', task, 'task.md');
   let turn = 0;
   const event = (prompt, extra = {}) => ({ hook_event_name: 'UserPromptSubmit', session_id: env.CODEX_THREAD_ID,
     turn_id: String(++turn), cwd: root, prompt, ...extra });
@@ -72,7 +72,7 @@ test('explicit user delegation binds brief and file evidence through the install
     work('record', 'normal', 'research', '--evidence', '실제 사용자 경로의 조사 근거');
     expect(fs.readFileSync(workPath('normal'), 'utf8')).not.toContain('## 위임 브리프');
     rejected(['brief', 'normal'], '명시적으로');
-    expect(hook(event('아이디어를 생각 중입니다'))).toEqual({});
+    expect(hook(event('아이디어를 생각 중입니다')).hookSpecificOutput.additionalContext).toContain('현재 외부 상태 지정 없음');
     expect(hook(event('아이디어 위임 missing')).hookSpecificOutput.additionalContext).toContain('정확한 명령');
     expect(hook(event('아이디어 위임 child 아이디어', { agent_id: 'child' })).hookSpecificOutput.additionalContext).toContain('하위 에이전트');
     expect(fs.existsSync(controlPath('child'))).toBe(false);
@@ -80,7 +80,7 @@ test('explicit user delegation binds brief and file evidence through the install
     const request = event('아이디어 위임 idea 팀의 작업 현황판을 만들어 줘');
     expect(hook(request).hookSpecificOutput.additionalContext).toContain('아이디어 위임을 기록');
     const first = fs.readFileSync(controlPath('idea'), 'utf8');
-    expect(hook(request)).toEqual({});
+    expect(hook(request).hookSpecificOutput.additionalContext).toContain('현재 외부 상태 지정 없음');
     expect(fs.readFileSync(controlPath('idea'), 'utf8')).toBe(first);
     start('idea');
     expect(work('brief', 'idea')).toContain('팀의 작업 현황판을 만들어 줘');
@@ -96,7 +96,7 @@ test('explicit user delegation binds brief and file evidence through the install
     record('research');
     record('design');
     record('implementation');
-    const checkout = path.join(root, 'work/idea/repos/project');
+    const checkout = path.join(root, 'work/idea/project');
     rejected(['check', '--cwd', checkout, '--delivery'], 'verification');
     record('verification');
     work('check', '--cwd', checkout, '--delivery');

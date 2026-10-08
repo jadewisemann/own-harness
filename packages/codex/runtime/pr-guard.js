@@ -8,6 +8,7 @@ import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {parseArgs} from 'node:util';
 import * as common from './harness_common.js';
+import { state_for } from './steering.js';
 
 export const SCRIPT = fs.realpathSync(fileURLToPath(import.meta.url));
 export const WORKSPACE = path.dirname(path.dirname(path.dirname(SCRIPT)));
@@ -36,11 +37,11 @@ export function read_document(file) {
 }
 
 export function reject_internal_metadata(text) {
-    const local_path = /\/(?:[^\s<>)\]`/]*\/)*(?:\.harness|\.worktrees?)(?:\/|\b)/;
-    const task_path = /(?:^|[\s("'`<]|\/)work[/\\][a-z0-9][a-z0-9._-]{0,79}[/\\](?:WORK\.md(?:\b|$)|(?:evidence|repos|\.worktrees)(?:[/\\]|(?=$|[\s"'`)\]<>])))/m;
+    const local_path = /\/(?:[^\s<>)\]`/]*\/)*(?:\.harness|\.worktrees?|\.sub-workspace)(?:\/|\b)/;
+    const task_path = common.private_task_pattern();
     if (local_path.test(text) || task_path.test(text) || text.includes(WORKSPACE + '/') || /\.harness[/\\]private(?:[/\\]|\b)/.test(text) ||
-        /(?<![\w])WORK\.md\b|<!--\s*own-harness-work\b|```own-harness-work\b/i.test(text)) {
-        throw new Error('PR.md에서 로컬 경로·WORK.md 참조·own-harness-work 메타데이터를 제거하세요.');
+        /(?<![\w])(?:WORK|task)\.md\b|<!--\s*own-harness-work\b|```own-harness-work\b/i.test(text)) {
+        throw new Error('PR.md에서 로컬 경로·작업 기록 참조·own-harness-work 메타데이터를 제거하세요.');
     }
     const fields = 'task_id|base_sha|head_sha|verified_state|workspace_root|task_workspace|worktree_path|worker_id|worker_name|assignment_sha256|planning_sha256|workers_sha256|current_fingerprint|verified_fingerprint|contract_sha256|control_mode';
     const copied_field = new RegExp('^\\s*(?:[-*]\\s+|\\|\\s*)?["`]?(' + fields + ')["`]?\\s*[:=|]\\s*');
@@ -86,7 +87,7 @@ export function snapshot(file, cwd, base, draft = true) {
     const [document, title, body, document_sha256] = read_document(file);
     check_delivery(cwd);
     return {file, cwd, repo: match[1], head, base, draft, commit: git(cwd, 'rev-parse', 'HEAD'),
-        document, document_sha256, title, body, policy_sha256: common.policy_digest(WORKSPACE)};
+        document, document_sha256, title, body, steering_sha256: state_for(cwd).digest, policy_sha256: common.policy_digest(WORKSPACE)};
 }
 export function current(proposal) { return snapshot(proposal.file, proposal.cwd, proposal.base, proposal.draft); }
 export function session_id(value = null) {

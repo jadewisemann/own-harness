@@ -41,7 +41,7 @@ export function brief(text, delegated) {
   if (!delegated) return null;
   const headings = [...text.matchAll(/^## 위임 브리프[ \t]*\r?$/gmu)];
   const matches = [...text.matchAll(/^## 위임 브리프[ \t]*\r?\n([\s\S]*?)(?=^## |$(?![\s\S]))/gmu)];
-  common.require(headings.length === 1 && matches.length === 1, '아이디어 위임에는 WORK.md의 ## 위임 브리프가 하나 필요합니다. work.js brief TASK를 실행하세요.');
+  common.require(headings.length === 1 && matches.length === 1, '아이디어 위임에는 작업 기록의 ## 위임 브리프가 하나 필요합니다. work.js brief TASK를 실행하세요.');
   const result = {};
   for (const label of BRIEF_FIELDS) {
     const fields = [...matches[0][1].matchAll(new RegExp(`^[ \\t]*(?:-[ \\t]*)?${label}[ \\t]*:[ \\t]*(.*)$`, 'gmu'))];

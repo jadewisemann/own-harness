@@ -16,7 +16,7 @@
 
 workspace의 `.harness/config.json`에 있는 명시적 저장소 매핑을 사용한다. 저장소 이름에 특별한 의미를 부여하지 않는다. 작업 도구는 `<workspace>/.harness/runtime/work.js`, PR 도구는 같은 폴더의 `pr-guard.js`다. 배포 checkout이나 전역 도구를 대신 호출하지 않는다. 명령 목록은 설치본의 `--help`로, 인자는 아래 표로 확인한다.
 
-제품 변경과 전달은 Git에 등록된 `work/<task>/repos/<repo>`에서 한다. baseline에서는 제품을 전달하지 않는다. 작업당 `work/<task>/WORK.md` 하나가 정본이다. 기존 본문을 보존하고 `own-harness-work:v1` 관리 블록을 임의로 고치지 않는다.
+제품 변경과 전달은 Git에 등록된 `work/<task>/<repo>`에서 한다. baseline에서는 제품을 전달하지 않는다. 작업당 `work/<task>/task.md` 하나가 정본이다. 기존 본문을 보존하고 `own-harness-work:v1` 관리 블록을 임의로 고치지 않는다.
 
 | 명령 | 역할 |
 | --- | --- |
@@ -36,13 +36,13 @@ workspace의 `.harness/config.json`에 있는 명시적 저장소 매핑을 사�
 
 직접 만든 worktree에는 `<workspace>/.harness/harness.js prepare CHECKOUT`을 먼저 적용한다. 등록된 common-dir와 레이아웃이 맞아야 한다. `start`는 이 준비를 호출한다. base ref는 시작 때 고정 SHA로 기록하며 이후 브랜치 이동을 이유로 몰래 바꾸지 않는다. 재개할 때 실제 경로·branch·HEAD·dirty 상태를 기록과 다시 대조한다.
 
-리드는 `work/<task>`에서 WORK와 근거를 관리한다. 구현 checkout은 `repos/<repo>`, 필요할 때만 만드는 병렬 구현 checkout은 `.worktrees/<name>`이다. 근거는 `evidence/`에 두고 에이전트별 문서 계층을 추가하지 않는다. `fork`는 worktree만 준비하므로 native subagent에 목표·경로·범위·완료 조건을 별도로 전달한다. 읽기 전용 조사·리뷰에는 전용 worktree를 기본 생성하지 않는다.
+기준 저장소는 `repository/<repo>`에 두고 설치 매핑으로 연결한다. 리드는 `work/<task>`에서 `task.md`와 근거를 관리한다. 구현 checkout은 같은 폴더의 `<repo>`, 필요할 때만 만드는 서브에이전트 workspace는 `.sub-workspace/<name>`, 그 안의 checkout은 `<repo>`다. WORK는 부모 `task.md`의 역할을 뜻한다. 근거는 부모 `evidence/`에 두고 에이전트별 문서 계층을 추가하지 않는다. `fork`는 worktree와 context를 준비하므로 native subagent에 목표·경로·범위·완료 조건을 별도로 전달한다. 읽기 전용 조사·리뷰에는 전용 worktree를 기본 생성하지 않는다.
 
 서브에이전트는 자기 checkout의 실제 검사를 마친 뒤 `result --evidence @FILE`로 보고한다. 검증된 로컬 커밋은 허용하지만 worker에서 직접 push·PR을 하지 않는다. 커밋 뒤 결과 근거를 갱신하고 리드가 `integrate`한다. fast-forward가 불가능하면 최신 통합 브랜치로 rebase하고 다시 검사·기록한다. 전체 verification은 모든 결과를 통합한 뒤 새로 수행한다. `clean`은 통합된 깨끗한 checkout만 제거한다. 미완료·변경된 결과나 기록을 삭제해 전달 검사를 우회하지 않는다.
 
 worker의 근거 파일은 정리되는 checkout 밖의 `work/<task>/evidence/`에 둬야 한다. 통합 결과에는 당시 계약과 검증을 보존한다. 이후 계약·설계를 수정하면 새 단계 근거와 전체 verification을 얻으며, 과거 통합 결과를 새 설계의 검증으로 취급하지 않는다.
 
-기존 `.harness/private/work/<task>/WORK.md`와 `.worktrees/<task>/<repo>`는 위치를 유지한다. 동일 작업 ID의 WORK를 새 위치에 복제하지 않는다. 새 작업은 새 구조로 시작한다.
+기존 `work/<task>/WORK.md`·`.harness/private/work/<task>/WORK.md`와 `work/<task>/repos/<repo>`·`work/<task>/.worktrees/<name>`·`.worktrees/<task>/<repo>`는 등록된 위치를 유지한다. 동일 작업의 정본을 새 위치에 복제하지 않는다. 새 작업은 `task.md`·`<repo>/`, 새 서브에이전트 배정은 `.sub-workspace/<name>/<repo>`로 시작한다.
 
 ## 단계와 전달 순서
 
@@ -81,7 +81,7 @@ worker의 근거 파일은 정리되는 checkout 밖의 `work/<task>/evidence/`�
 PR 준비가 허용된 작업은 코드·검증·commit·push를 끝낸 뒤 실제 checkout을 지정해 실행한다.
 
 ```sh
-bun /absolute/workspace/.harness/runtime/pr-guard.js review /absolute/path/PR.md --cwd /absolute/workspace/work/task/repos/project --base main
+bun /absolute/workspace/.harness/runtime/pr-guard.js review /absolute/path/PR.md --cwd /absolute/workspace/work/task/project --base main
 ```
 
 기본은 Draft이며 일반 PR은 review에 `--ready`를 지정한다. 문서를 Codex 편집기로 열고 제목·본문 전체, head → base, HEAD, Draft 여부를 보여 준다. 출력된 `PR 승인 <검토 코드>`를 요청한다.

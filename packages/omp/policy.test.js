@@ -1,0 +1,97 @@
+import { test, expect } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { createWork } from './extension.js';
+import { checkTool, policyContext, policyFor, registerPolicy } from './policy.js';
+
+test('작업 지침 상속·저장소별 문맥·문서 준비 검사와 부모/자식 경로 경계', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'omp-policy-')));
+  const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const event = (toolName, input = {}) => ({ toolName, input });
+  try {
+    expect(checkTool(event('bash'), { cwd: root })?.block).toBeUndefined();
+    fs.writeFileSync(path.join(root, 'AGENTS.md'), '공통 지침 SAMPLE-COMMON');
+    for (const repo of ['frontend', 'backend']) {
+      const source = path.join(root, 'repository', repo);
+      fs.mkdirSync(source, { recursive: true });
+      git(source, 'init', '-b', 'main');
+      git(source, 'config', 'user.name', 'Fixture');
+      git(source, 'config', 'user.email', 'fixture@example.invalid');
+      fs.writeFileSync(path.join(source, 'file.txt'), 'baseline');
+      git(source, 'add', 'file.txt');
+      git(source, 'commit', '-m', 'fixture');
+      fs.writeFileSync(path.join(source, 'AGENTS.md'), `저장소 전용 SAMPLE-${repo}`);
+    }
+    createWork(root, 'feature-a frontend=HEAD backend=HEAD');
+    const task = path.join(root, 'work/feature-a');
+    const checkout = path.join(task, 'frontend');
+    const main = { cwd: checkout, agent: { kind: 'main', id: 'Main' } };
+    const taskFile = path.join(task, 'task.md');
+    expect(fs.readFileSync(path.join(task, 'AGENTS.md'), 'utf8')).toContain('SAMPLE-COMMON');
+    expect(fs.existsSync(path.join(checkout, 'AGENTS.md'))).toBe(false);
+    const context = policyContext(main);
+    expect(context).toContain('SAMPLE-frontend');
+    expect(context).not.toContain('SAMPLE-backend');
+    expect(context).toContain('아이디어');
+    expect(checkTool(event('bash'), main)?.block).toBe(true);
+    expect(checkTool(event('read'), main)?.block).toBeUndefined();
+    expect(checkTool(event('write', { path: taskFile }), main)?.block).toBeUndefined();
+    expect(checkTool(event('write', { path: 'file.txt' }), main)?.block).toBe(true);
+    expect(checkTool(event('bash'), { cwd: root })?.block).toBe(true);
+    expect(checkTool(event('work_create'), { cwd: root })?.block).toBeUndefined();
+    const body = ['목표', '범위', '비목표', '완료 조건', '설계 결정과 미정 사항'].map(h => `## ${h}\n\n구체적인 내용`).join('\n\n');
+    fs.writeFileSync(taskFile, body);
+    expect(checkTool(event('write', { path: 'file.txt' }), main)?.block).toBeUndefined();
+    expect(checkTool(event('bash'), main)?.block).toBeUndefined();
+    expect(checkTool(event('write', { path: '../backend/file.txt' }), main)?.block).toBe(true);
+    expect(checkTool(event('edit', { path: 'file.txt', edits: [{ op: 'update', rename: '../backend/file.txt' }] }), main)?.block).toBe(true);
+    fs.symlinkSync(path.join(root, 'repository/frontend'), path.join(checkout, 'escape'));
+    expect(checkTool(event('write', { path: 'escape/file.txt' }), main)?.block).toBe(true);
+    expect(checkTool(event('write', { path: 'local://file' }), main)?.block).toBe(true);
+    for (const file of ['~/outside', '@/tmp/outside', ':/tmp/outside', '[/tmp/outside#1234]']) {
+      expect(checkTool(event('write', { path: file }), main)?.block).toBe(true);
+    }
+    expect(checkTool(event('edit', { input: 'hashline input' }), main)?.block).toBe(true);
+    expect(checkTool(event('write', { path: 'src/[slug]/page.ts' }), main)?.block).toBeUndefined();
+    expect(checkTool(event('ast_edit', { paths: ['file.txt'] }), main)?.block).toBe(true);
+    const shared = { ...main, agent: { kind: 'sub', id: 'ReadOnly', parentId: 'Main' } };
+    expect(checkTool(event('bash'), shared)?.block).toBe(true);
+    expect(checkTool(event('read'), shared)?.block).toBeUndefined();
+    const isolated = path.join(task, '.sub-workspace/worker');
+    git(checkout, 'worktree', 'add', '--detach', isolated, 'HEAD');
+    const child = { cwd: isolated, agent: { kind: 'sub', id: 'Worker', parentId: 'Main' } };
+    expect(policyFor(child).repo).toBe('frontend');
+    expect(policyContext(child)).toContain('SAMPLE-frontend');
+    expect(policyContext(child)).not.toContain('SAMPLE-backend');
+    expect(checkTool(event('write', { path: 'file.txt' }), child)?.block).toBeUndefined();
+    expect(checkTool(event('write', { path: taskFile }), child)?.block).toBe(true);
+    fs.writeFileSync(taskFile, body.replace('## 목표\n\n구체적인 내용', '## 목표\n\n작성 필요'));
+    expect(checkTool(event('bash'), child)?.block).toBe(true);
+    fs.rmSync(taskFile);
+    expect(checkTool(event('write', { path: taskFile }), main)?.block).toBeUndefined();
+    expect(checkTool(event('write', { path: 'file.txt' }), main)?.block).toBe(true);
+    fs.writeFileSync(taskFile, body);
+    const agentsFile = path.join(task, 'AGENTS.md');
+    fs.appendFileSync(agentsFile, '\n사용자가 덧붙인 지침');
+    const saved = fs.readFileSync(agentsFile, 'utf8');
+    fs.writeFileSync(path.join(root, 'AGENTS.md'), '상위 변경');
+    expect(policyContext(main)).toContain('사용자가 덧붙인 지침');
+    expect(fs.readFileSync(agentsFile, 'utf8')).toBe(saved);
+    fs.rmSync(agentsFile);
+    const handlers = new Map();
+    registerPolicy({ on: (name, fn) => handlers.set(name, fn) });
+    handlers.get('session_start')({}, { ...main, ui: { notify: () => {} } });
+    expect(fs.readFileSync(agentsFile, 'utf8')).toContain('상위 변경');
+    const injected = handlers.get('before_agent_start')({ systemPrompt: ['기본 지침'] }, child);
+    expect(injected.systemPrompt[0]).toBe('기본 지침');
+    expect(injected.systemPrompt[1]).toContain('SAMPLE-frontend');
+    policyFor({ cwd: path.join(task, 'backend'), agent: { kind: 'main', id: 'Main' } });
+    const ambiguous = { cwd: isolated, agent: { kind: 'sub', id: 'NewWorker', parentId: 'Main' } };
+    expect(policyFor(ambiguous).repo).toBeUndefined();
+    expect(checkTool(event('write', { path: 'file.txt' }), ambiguous)?.block).toBe(true);
+    fs.writeFileSync(path.join(task, '.own-harness-work.json'), '{}');
+    expect(checkTool(event('write', { path: 'file.txt' }), main)?.block).toBe(true);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

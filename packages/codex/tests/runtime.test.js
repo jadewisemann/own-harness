@@ -65,13 +65,13 @@ test('runtime guards preserve offline work, approval, Git hook and delivery regr
     function task(name, repo = 'project', scopes = [], external = null) {
       let target;
       if (external || scopes.length) {
-        target = external ? path.join(external, '.worktrees', name, repo) : path.join(root, 'work', name, 'repos', repo);
+        target = external ? path.join(external, '.worktrees', name, repo) : path.join(root, 'work', name, repo);
         fs.mkdirSync(path.dirname(target), { recursive: true });
         git(c.repo_paths()[repo], 'worktree', 'add', '-b', name, target, 'main');
         w.init(name, target, 'main', scopes);
       } else {
         w.start(name, repo, 'main', name);
-        target = path.join(root, 'work', name, 'repos', repo);
+        target = path.join(root, 'work', name, repo);
       }
       const file = w.work_path(name);
       write(file, read(file).replace('목표: 작성 필요', '목표: 경로와 승인을 검증한다').replace('범위: 작성 필요', '범위: 등록된 파일과 검사').replace('완료 조건: 작성 필요', '완료 조건: 회귀 검사 통과'));
@@ -149,7 +149,7 @@ test('runtime guards preserve offline work, approval, Git hook and delivery regr
     const control_event = event('작업 통제 human');
     w.hook(control_event);
     const held = read(w.control_path('human'));
-    assert.deepEqual(w.hook(control_event), {});
+    assert.match(w.hook(control_event).hookSpecificOutput.additionalContext, /현재 외부 상태 지정 없음/);
     assert.equal(read(w.control_path('human')), held);
     phases('human', 'design');
     reject(() => w.record('human', 'implementation', '구현 결과'), '사용자 통제');
@@ -159,10 +159,15 @@ test('runtime guards preserve offline work, approval, Git hook and delivery regr
     for (const bad of [{ ...approve, turn_id: null }, { ...approve, agent_id: 'child' }, { ...approve, session_id: 'other' }]) assert.ok(JSON.stringify(w.hook(bad)).includes('적용하지 못했습니다'));
     w.hook(approve);
     const human_state = read(w.control_path('human'));
-    assert.deepEqual(w.hook(approve), {});
+    assert.match(w.hook(approve).hookSpecificOutput.additionalContext, /현재 외부 상태 지정 없음/);
     assert.equal(read(w.control_path('human')), human_state);
     phases('human');
     w.check(human, true);
+    const approved_control = read(w.control_path('human'));
+    write(path.join(root, 'state.json'), JSON.stringify({ mode: 'design' }));
+    reject(() => w.check(human, true), '사용자 통제');
+    assert.equal(read(w.control_path('human')), approved_control);
+    fs.unlinkSync(path.join(root, 'state.json'));
     write(config, old_config + '\n');
     reject(() => w.check(human, true), '사용자 통제');
     assert.equal(w.read_control('human').mode, 'human');
@@ -204,7 +209,7 @@ test('runtime guards preserve offline work, approval, Git hook and delivery regr
     pr.hook(approval);
     assert.equal(read(state_file), pr_state);
     const command = 'bun ' + quote(path.join(runtime, 'pr-guard.js')) + ' create';
-    const tool_event = { hook_event_name: 'PreToolUse', session_id: 'runtime-fixture', turn_id: 'pr-approval', tool_name: 'exec_command', tool_input: { cmd: command } };
+    const tool_event = { cwd: tree, hook_event_name: 'PreToolUse', session_id: 'runtime-fixture', turn_id: 'pr-approval', tool_name: 'exec_command', tool_input: { cmd: command } };
     for (const bad of [{ ...tool_event, agent_id: 'child' }, { ...tool_event, turn_id: null }, { ...tool_event, turn_id: 'next-turn' }]) reject(() => pr.hook(bad));
     pr.hook(tool_event);
     pr.create();
@@ -223,7 +228,7 @@ test('runtime guards preserve offline work, approval, Git hook and delivery regr
     reject(() => pr.create());
     write(config, old_config);
     assert.ok(pr.load(state_file).invalidated);
-    for (const text of ['WORK.md', '<!-- own-harness-work:v1 -->', '.harness/private/records/key.json', 'contract_sha256: abc123', path.join(root, '.worktrees'), path.join(root, 'work/sample/repos/project'), 'work/sample/evidence/research.md', 'work/sample/.worktrees/worker', 'task_workspace: local']) {
+    for (const text of ['task.md', '<!-- own-harness-work:v1 -->', '.harness/private/records/key.json', 'contract_sha256: abc123', path.join(root, '.worktrees'), path.join(root, 'work/sample/repos/project'), 'work/sample/evidence/research.md', 'work/sample/.worktrees/worker', 'task_workspace: local']) {
       write(document, '# PR.md\n## 제목\nfix: example\n## 본문\n' + text);
       reject(() => pr.read_document(document));
     }
@@ -266,11 +271,11 @@ test('runtime guards preserve offline work, approval, Git hook and delivery regr
     run(tree, [process.execPath, path.join(runtime, 'check-workspace.js'), 'pre-commit'], { env: { ...process.env, GIT_AUTHOR_EMAIL: 'other@example.invalid' }, ok: false });
     passed('original hook failure/cwd/argv/stdin preserved; hook index mutation and identity override rejected');
 
-    const internal = path.join(tree, 'WORK.md');
+    const internal = path.join(tree, 'task.md');
     write(internal, 'internal record');
-    git(tree, 'add', 'WORK.md');
+    git(tree, 'add', 'task.md');
     git(tree, 'commit', '-m', 'test: internal record');
-    git(tree, 'rm', 'WORK.md');
+    git(tree, 'rm', 'task.md');
     git(tree, 'commit', '-m', 'test: remove internal record');
     w.record('sample', 'verification', '내부 경로 이력 검사', 'independent');
     sha = git(tree, 'rev-parse', 'HEAD');
@@ -336,7 +341,7 @@ test('invalid UTF-8 Git filenames fail closed before recording or checking evide
     const runtime = path.join(root, '.harness/runtime');
     fs.cpSync(SOURCE, runtime, { recursive: true });
     write(path.join(root, '.harness/config.json'), JSON.stringify({ schema: 1, repos: { project: '.' } }));
-    const checkout = path.join(root, 'work/bytes/repos/project');
+    const checkout = path.join(root, 'work/bytes/project');
     fs.mkdirSync(path.dirname(checkout), { recursive: true });
     git(root, 'worktree', 'add', '-b', 'bytes', checkout, 'main');
     const w = await module(path.join(runtime, 'work.js'));

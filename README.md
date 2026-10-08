@@ -4,6 +4,66 @@ Codex 작업에 pstack의 조사·설계·구현·독립 검증 흐름과 로컬
 
 `pstack-codex`는 판단 절차를 안내하는 스킬입니다. Bun으로 실행하는 JavaScript runtime은 작업 계약, 단계 근거, 현재 파일·HEAD·index, 승인 상태를 검사합니다. 명시적으로 아이디어를 위임한 작업은 추가로 필수 브리프와 단계별 근거 파일을 검사합니다. 이 검사는 사고의 충분함, 제품 품질, 모든 파일 쓰기의 차단이나 OS 보안 격리를 보장하지 않습니다.
 
+## 저장소 구조
+
+문서와 배포 대상별 코드를 나눕니다. `packages/codex/`는 Codex용 설치본이며, `packages/omp/`는 작업 폴더·worktree 준비와 문서 인계를 담당하는 OMP 플러그인입니다. OMP 연결 방법과 서브에이전트 격리 경계는 [OMP 사용법](packages/omp/README.md)을 참고하세요. Codex 플러그인 형식과 별도 제어 화면·CLI는 설계 중입니다.
+
+```text
+own-harness/
+├── AGENTS.md                 # 이 저장소의 작업 지침
+├── DESIGN.md                 # 지속적 설계와 미확정 제안
+├── README.md                 # 사용법과 저장소 안내
+├── docs/                     # 공개 가능한 설명과 연결 경계
+├── packages/
+│   ├── omp/                  # OMP 작업 준비·인계 플러그인
+│   └── codex/                # 현재 Codex용 설치본
+│       ├── harness.js        # 설치·갱신·제거 진입점
+│       ├── runtime/          # 실행 검사와 상태 처리
+│       ├── skills/           # 함께 배포하는 스킬
+│       ├── templates/        # 설치에 사용하는 지침 틀
+│       └── tests/            # 해당 배포본의 검사
+├── package.json              # 저장소 공통 Bun 요구 사항과 검사 명령
+└── .github/workflows/        # 저장소 CI
+```
+
+로컬 작업 기록은 Git에서 제외되는 `work/<task>/`에 둡니다. WORK는 이번 작업의 범위와 진행 상황, HANDOFF는 인계 시점의 기록, `evidence/`는 실제 검증 근거를 담습니다. 설치된 `.harness/`의 실행 파일·통제 상태는 배포 소스와 구분합니다.
+
+추가 배포 대상은 별도 제어 화면과 제어 CLI입니다. 새 대상은 `packages/<target>/`으로 분리하며, 공통 코드의 추출 기준과 미확정인 배포 형식은 [DESIGN.md](DESIGN.md)에 기록합니다. 모든 테스트는 저장소 루트에서 `bun test`로 실행할 수 있습니다.
+
+## 외부 상태 스티어링
+
+설치된 Codex 훅과 OMP 플러그인은 workspace 최상단의 `state.json`을 읽습니다. 프로젝트 → 작업 → 등록된 서브 workspace 순서로 합성하며, 하위에 명시한 항목만 덮어씁니다. 파일이나 키가 없으면 상위의 현재 값을 사용합니다. 상위 변경과 하위 키 삭제는 다음 훅부터 반영됩니다.
+
+프로젝트의 `state.json` 예시:
+
+```json
+{
+  "mode": "pstack-design",
+  "control": "auto",
+  "instruction": "기존 DESIGN.md와 작업 범위를 확인하고 진행한다."
+}
+```
+
+작업의 `work/example-change/state.json`에 아래 내용만 쓰면 작업 방식과 추가 지침은 상속하고, 해당 작업의 변경 실행을 보류합니다.
+
+```json
+{"control": "human"}
+```
+
+- `mode`: `work`, `pstack`, `design`, `pstack-design`. 해당 방식의 지침을 전달하며 기존 단계·승인 검사는 유지합니다.
+- `control`: `auto` 또는 `human`. `human`에서는 명시적으로 지원하는 읽기 전용 도구만 허용합니다. 셸 명령과 알 수 없는 도구는 보류합니다. `auto`가 commit·push·PR·배포 승인까지 만들지는 않습니다.
+- `instruction`: 추가 지침 문자열. 하위 값이 상위 문장 전체를 교체합니다. 빈 문자열은 추가 지침을 비우고, 키 삭제는 상속으로 돌아갑니다.
+
+Codex의 서브 상태는 `work/<task>/.sub-workspace/<name>/state.json`에 둡니다. 저장소 checkout 안의 동명 파일은 제어 파일로 탐색하지 않습니다. OMP의 임시 workspace 연결은 [OMP 사용법](packages/omp/README.md)을 따릅니다. 상태 파일은 사용자가 관리하며 설치·업데이트·제거로 덮어쓰거나 지우지 않습니다.
+
+`null`, 알 수 없는 항목·값, 손상된 JSON, 심볼릭 링크와 특수 파일은 오류입니다. 오류 중에는 읽기 도구 외 실행을 보류합니다. 초기 상태는 외부 지정이 없는 상태이며 기존 동작을 유지합니다. 이미 실행 중인 명령을 중단하거나 변경을 되돌리는 기능은 없습니다. 네 방식의 개별 승인 체계와 별도 제어 화면·CLI는 후속 설계 범위입니다.
+
+## CI와 배포 묶음
+
+GitHub Actions는 push·PR·수동 실행마다 Linux와 macOS에서 전체 테스트를 실행합니다. 각 환경의 로그와 JUnit 결과를 14일간 보관하며, 두 환경이 모두 통과하면 해당 커밋의 Codex·OMP 코드와 문서를 `own-harness.tar.gz`로 묶고 SHA-256 파일을 함께 제공합니다. Actions 실행 화면에서 `own-harness-<커밋 SHA>` 아티팩트를 다운로드할 수 있습니다.
+
+배포 묶음에는 로컬 `work/` 기록이나 설치 환경이 들어가지 않습니다. 이 묶음은 운영 환경 설치나 패키지 레지스트리 게시를 자동으로 수행하지 않습니다.
+
 ## 설치
 
 대상 환경은 **Bun 1.4.2 이상, Git 2.31 이상, macOS·Linux의 POSIX 셸**입니다. 외부 npm 패키지는 필요하지 않습니다. PR 생성과 비공개 GitHub 전송 확인에는 인증된 `gh`가 필요합니다. Windows와 다른 에이전트·클라우드 훅 호환은 지원 범위에 포함하지 않습니다.
@@ -17,15 +77,15 @@ Git 파일명은 UTF-8을 지원하며 해석할 수 없는 바이트가 있으�
 ```sh
 git clone https://github.com/jadewisemann/own-harness.git
 cd own-harness
-bun harness.js install /absolute/path/project
-bun harness.js doctor /absolute/path/project
+bun packages/codex/harness.js install /absolute/path/project
+bun packages/codex/harness.js doctor /absolute/path/project
 ```
 
 여러 저장소가 있는 상위 폴더는 저장소 이름과 상대 경로를 명시합니다. 상위 폴더 자체는 Git 저장소가 아니어도 됩니다.
 
 ```sh
-bun harness.js install /absolute/path/workspace --repo api=api --repo web=web
-bun harness.js doctor /absolute/path/workspace
+bun packages/codex/harness.js install /absolute/path/workspace --repo api=repository/api --repo web=repository/web
+bun packages/codex/harness.js doctor /absolute/path/workspace
 ```
 
 설치기는 실행 파일을 대상의 `.harness/`에 복사합니다. 각 설치는 자기 runtime 사본을 사용하므로 배포 저장소의 checkout을 바꿔도 설치본이 곧바로 바뀌지 않습니다. 설정은 `.harness/config.json`에 저장됩니다. 기본 단일 저장소 매핑은 `{"schema":1,"repos":{"project":"."}}`입니다.
@@ -50,20 +110,25 @@ bun harness.js doctor /absolute/path/workspace
 
 ## 작업 순서
 
-작업 하나를 폴더 하나로 관리합니다. 리드는 이 폴더에서 오케스트레이션하고, 실제 변경은 해당 레포 checkout에서 수행합니다.
+아래는 Codex 설치본의 작업 순서입니다. 작업 하나를 폴더 하나로 관리합니다. 리드는 이 폴더에서 오케스트레이션하고, 실제 변경은 해당 레포 checkout에서 수행합니다. OMP의 `.sub-workspace` 내부 관리는 [OMP 사용법](packages/omp/README.md)을 따릅니다.
 
 ```text
-work/example-change/
-├── WORK.md
-├── repos/
-│   ├── api/
+workspace/
+├── repository/
+│   ├── api/                          # 기준 저장소
 │   └── web/
-├── .worktrees/
-│   └── api-payment/     # 병렬 구현이 필요할 때만 생성
-└── evidence/
+└── work/
+    └── example-change/
+        ├── task.md                  # 작업 기록의 정본
+        ├── api/                     # 통합 worktree
+        ├── web/
+        ├── evidence/
+        └── .sub-workspace/          # 병렬 구현이 필요할 때 생성
+            └── api-payment/         # 서브에이전트 workspace
+                └── api/             # 서브에이전트 worktree
 ```
 
-`WORK.md` 하나에 계약·단계 근거와 병렬 작업의 담당·범위·결과를 보관합니다. 별도의 `agents/`, 에이전트별 `TASK.md`·`RESULT.md`는 만들지 않습니다. `work/<task>`에도 로컬 지침·스킬·훅이 연결됩니다. 이 폴더 자체는 제품 Git 저장소가 아니며 회사 공통 지식은 작업 폴더 밖의 기존 저장 위치를 참조합니다.
+`task.md` 하나에 계약·단계 근거와 병렬 작업의 담당·범위·결과를 보관합니다. 이 문서에서 WORK는 그 기록의 역할을 뜻합니다. 별도의 `agents/`, 에이전트별 `TASK.md`·`RESULT.md`는 만들지 않습니다. `work/<task>`와 등록된 `.sub-workspace/<name>`에도 로컬 지침·스킬·훅이 연결됩니다. 이 폴더 자체는 제품 Git 저장소가 아니며 회사 공통 지식은 작업 폴더 밖의 기존 저장 위치를 참조합니다. 새 저장소 매핑 이름으로 `evidence`·`repos`는 대소문자와 관계없이 사용하지 않습니다.
 
 설치한 뒤에는 **설치본**의 CLI를 사용합니다. 다음은 단일 저장소 예시입니다. 여러 저장소에서는 `--repo api`처럼 매핑 이름을 쓰고, 같은 작업에 필요한 저장소를 모두 등록한 뒤 계약을 확정합니다.
 
@@ -71,13 +136,13 @@ work/example-change/
 workspace=/absolute/path/project
 runtime="$workspace/.harness/runtime"
 task=example-change
-checkout="$workspace/work/$task/repos/project"
+checkout="$workspace/work/$task/project"
 bun "$runtime/work.js" start "$task" --repo project --base origin/main --branch feat/example-change
 ```
 
-`start`는 `work/<task>/repos/<repo>`를 만들고 작업 폴더와 checkout의 로컬 설정을 준비한 뒤 WORK에 등록합니다. baseline의 미커밋 변경은 복사하지 않습니다. base는 로컬에서 해석 가능한 ref여야 하므로 필요하면 먼저 허용된 fetch로 갱신하세요. 제품 변경과 전달은 등록된 worktree에서 진행합니다.
+`start`는 `work/<task>/<repo>`를 만들고 작업 폴더와 checkout의 로컬 설정을 준비한 뒤 WORK에 등록합니다. baseline의 미커밋 변경은 복사하지 않습니다. base는 로컬에서 해석 가능한 ref여야 하므로 필요하면 먼저 허용된 fetch로 갱신하세요. 제품 변경과 전달은 등록된 worktree에서 진행합니다.
 
-1. `work/example-change/WORK.md`의 **작업 계약**에 목표·범위·완료 조건을 실제 요청으로 채웁니다. 같은 문서를 정본으로 유지합니다.
+1. `work/example-change/task.md`의 **작업 계약**에 목표·범위·완료 조건을 실제 요청으로 채웁니다. 같은 문서를 정본으로 유지합니다.
 2. 조사로 실제 호출·데이터 흐름을 확인합니다. 설계에서 선택 이유, 대안, 의존 작업, 병렬 가능 작업, 공유 상태 분리 방법을 정합니다. 각 단계의 실제 근거 파일을 만든 뒤 차례로 기록합니다.
 
 ```sh
@@ -110,10 +175,10 @@ git -C "$checkout" push -u origin feat/example-change
 
 `record`는 입력한 보고를 저장하며 테스트를 대신 실행하지 않습니다. 예시 파일을 만들었다는 이유로 통과를 기록하지 마세요. `snapshot`도 실제 상태만 갱신하며 검증을 대신하지 않습니다. 검증 뒤 코드·index·HEAD·WORK 본문·실행 정책이 바뀌면 필요한 근거를 다시 얻습니다. `commit -a`나 `--only`의 임시 index 대신 명시적으로 stage한 일반 index를 사용합니다.
 
-이미 만든 worktree는 `work/<task>/repos/<repo>` 구조와 Git 등록이 맞아야 합니다. `prepare`로 설치 상태를 연결하고 `init`으로 등록합니다. 경로 범위를 제한하려면 최초 `init` 때 `--scope`를 사용합니다.
+이미 만든 worktree는 `work/<task>/<repo>` 구조와 Git 등록이 맞아야 합니다. `prepare`로 설치 상태를 연결하고 `init`으로 등록합니다. 경로 범위를 제한하려면 최초 `init` 때 `--scope`를 사용합니다.
 
 ```sh
-existing_checkout="$workspace/work/another-task/repos/project"
+existing_checkout="$workspace/work/another-task/project"
 bun "$workspace/.harness/harness.js" prepare "$existing_checkout"
 bun "$runtime/work.js" init another-task --cwd "$existing_checkout" --base origin/main --scope src --scope tests
 ```
@@ -127,7 +192,7 @@ bun "$runtime/work.js" fork "$task" api-payment --repo project --owner payment-b
 bun "$runtime/work.js" status "$task"
 ```
 
-생성 경로는 `work/<task>/.worktrees/api-payment`입니다. 작업용 통합 checkout의 깨끗한 현재 커밋에서 새 브랜치를 만들며, 미커밋 변경은 복사하지 않습니다. 한 checkout의 작성자는 한 명으로 유지합니다.
+생성 경로는 `work/<task>/.sub-workspace/api-payment/project`입니다. `api-payment`는 배정 이름이고 마지막 `project`는 `--repo`로 지정한 저장소 이름입니다. 작업용 통합 checkout의 깨끗한 현재 커밋에서 새 브랜치를 만들며, 미커밋 변경은 복사하지 않습니다. 한 checkout의 작성자는 한 명으로 유지합니다.
 
 구현 담당자가 변경을 stage하고 실제 검사를 마친 뒤 작업 폴더의 `evidence/`에 결과 근거를 작성합니다. `result`는 이 폴더 안의 파일만 받으므로 worktree를 정리해도 근거가 남습니다. 결과는 현재 파일·index·HEAD·계약에 묶이며, 로컬 커밋 후에는 새 HEAD에서 필요한 검사를 다시 수행하고 결과를 다시 기록합니다.
 
@@ -211,20 +276,20 @@ bun /absolute/path/project/.harness/runtime/pr-guard.js create
 
 ```sh
 git pull --ff-only
-bun harness.js update /absolute/path/project
-bun harness.js doctor /absolute/path/project
+bun packages/codex/harness.js update /absolute/path/project
+bun packages/codex/harness.js doctor /absolute/path/project
 ```
 
 업데이트는 최초 원본과 사용자 변경을 보존합니다. runtime·정책 변경으로 기존 근거와 PR 승인이 낡으면 다시 검증·승인해야 합니다. human 통제를 자동으로 이양하지 않습니다. 바뀐 훅 정의도 Codex에서 다시 검토하세요.
 
-Python 설치본도 새 배포본의 `bun harness.js update`로 이전합니다. 관리 파일이 원래 설치 상태와 일치하는지 확인한 뒤 JS runtime과 Bun 훅으로 교체합니다. WORK·통제 기록은 보존하지만 실행 정책이 바뀌므로 기존 단계 근거와 승인은 다시 얻어야 합니다.
+Python 설치본도 새 배포본의 `bun packages/codex/harness.js update`로 이전합니다. 관리 파일이 원래 설치 상태와 일치하는지 확인한 뒤 JS runtime과 Bun 훅으로 교체합니다. WORK·통제 기록은 보존하지만 실행 정책이 바뀌므로 기존 단계 근거와 승인은 다시 얻어야 합니다.
 
-기존 `.harness/private/work/<task>/WORK.md`와 `.worktrees/<task>/<repo>` 작업은 같은 위치에서 계속 사용할 수 있습니다. 업데이트가 Git 작업 폴더를 자동 이동하지 않습니다. 새 작업부터 `work/<task>/` 구조를 사용하며, 같은 ID의 WORK를 두 위치에 중복 만들면 거절합니다.
+기존 `work/<task>/WORK.md`·`.harness/private/work/<task>/WORK.md`와 `work/<task>/repos/<repo>`·`work/<task>/.worktrees/<name>`·`.worktrees/<task>/<repo>`는 등록된 위치에서 계속 사용합니다. 업데이트가 기존 기록이나 Git worktree를 자동 이동하지 않습니다. 새 작업은 `task.md`와 직접 배치한 `<repo>/`를, 새 worker는 `.sub-workspace/<name>/<repo>`를 사용합니다. 같은 작업의 기록을 여러 위치에 중복 만들면 거절합니다.
 
 사용을 끝내고 설치를 제거할 때만 다음 명령을 실행합니다.
 
 ```sh
-bun harness.js uninstall /absolute/path/project
+bun packages/codex/harness.js uninstall /absolute/path/project
 ```
 
 제거는 원래 Git 훅·설정과 관리 문서를 복구합니다. WORK·통제 기록·증거와 사용자 branch·worktree는 유지하며, 남은 로컬 기록을 보호하는 제외 규칙도 유지할 수 있습니다. 관리 파일에 사용자 변경이 있으면 충돌을 해결한 뒤 다시 실행하세요.
@@ -253,4 +318,4 @@ bun test
 
 ## 출처와 라이선스
 
-MIT 라이선스입니다. 새 코드는 Jade Wisemann의 [LICENSE](LICENSE)를 따릅니다. 포함한 `pstack-codex`는 [pstack](https://github.com/cursor/plugins/tree/9f451cf875ad1239912762f67741e8e5ba6ac0f1/pstack)의 비공식 파생 스킬이며 Lauren Tan의 MIT 고지를 [스킬 LICENSE](skills/pstack-codex/LICENSE)에 보존했습니다. 원본 기준과 포팅 범위는 [upstream.md](skills/pstack-codex/references/upstream.md)에 있습니다.
+MIT 라이선스입니다. 새 코드는 Jade Wisemann의 [LICENSE](LICENSE)를 따릅니다. 포함한 `pstack-codex`는 [pstack](https://github.com/cursor/plugins/tree/9f451cf875ad1239912762f67741e8e5ba6ac0f1/pstack)의 비공식 파생 스킬이며 Lauren Tan의 MIT 고지를 [스킬 LICENSE](packages/codex/skills/pstack-codex/LICENSE)에 보존했습니다. 원본 기준과 포팅 범위는 [upstream.md](packages/codex/skills/pstack-codex/references/upstream.md)에 있습니다.

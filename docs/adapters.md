@@ -10,6 +10,8 @@ Git wrapper는 기존 훅의 인자·작업 경로·표준 입력을 전달하�
 
 checkout과 `work/<task>` 작업 폴더의 `.codex/hooks.json`에는 기존 항목을 보존하며 `UserPromptSubmit`·`PreToolUse`를 설치된 `pr-guard.js`의 같은 진입점에 연결합니다. 진입점은 WORK 통제 이벤트도 전달합니다. 전역 훅은 바꾸지 않습니다. 여러 설정 계층에서 매칭된 훅이 함께 실행될 수 있으므로 `/hooks`에서 실제 출처를 확인하세요. 동일 계층의 inline TOML 훅과 `hooks.json`도 함께 로드될 수 있습니다. 설치 중 충돌로 판정되면 기존 정의를 검토해 정리해야 합니다. [공식 훅 문서](https://learn.chatgpt.com/docs/hooks), [공식 설정 문서](https://learn.chatgpt.com/docs/config-file/config-advanced)
 
+같은 진입점에서 등록된 workspace의 `state.json`을 매번 읽고 프로젝트·작업·서브 상태를 합성합니다. `additionalContext`로 현재 상태를 전달하고 `PreToolUse`에서 `human`·상태 오류에 따른 실행 보류를 적용합니다. `auto`를 승인 출력으로 바꾸지 않습니다. Git 전달 검사도 같은 상태를 확인하며, Codex의 작업 계약·검증·PR 제안에는 적용 상태의 digest를 연결합니다. 따라서 적용 상태가 달라지면 이전 근거와 승인이 그대로 유효하다고 간주하지 않습니다.
+
 `prepare`는 등록된 Git worktree로 확인한 작업 폴더에만 로컬 설정을 연결합니다. `fork`는 병렬 구현 경로를 만들고 WORK에 담당·범위를 기록하며, 모델이나 별도 에이전트 프로세스를 실행하지 않습니다. 실제 위임은 현재 세션의 native subagent 도구가 담당합니다.
 
 프로젝트 신뢰와 현재 훅 정의에 대한 신뢰는 별도 조건입니다. 설치기는 둘 다 자동 승인하지 않습니다. 실제 클라이언트·프로젝트에서 검토하고 동작을 확인해야 합니다. 합성 이벤트 fixture는 파서·승인 상태·차단 조건의 회귀 검사이며 실제 Codex 훅 활성화 증명이 아닙니다.
