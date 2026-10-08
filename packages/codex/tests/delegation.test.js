@@ -86,9 +86,7 @@ test('explicit user delegation binds brief and file evidence through the install
     expect(work('brief', 'idea')).toContain('팀의 작업 현황판을 만들어 줘');
     // A complete ordinary contract cannot satisfy an empty delegation brief.
     const initial = fs.readFileSync(workPath('idea'), 'utf8');
-    fs.writeFileSync(workPath('idea'), initial.replace('- 목표: 작성 필요', '- 목표: 현황판')
-      .replace('- 범위: 작성 필요', '- 범위: 현황판 표시')
-      .replace('- 완료 조건: 작성 필요', '- 완료 조건: 표시 검사 통과'));
+    fs.writeFileSync(workPath('idea'), initial.replace(/(## (?:목표|범위|하지 않을 일|완료 조건|결정 사항)\n\n)작성 필요/g, '$1현황판 표시 검사'));
     rejected(['record', 'idea', 'research', '--evidence', '실제 조사 내용'], '대상 사용자');
     fill('idea');
     rejected(['record', 'idea', 'research', '--evidence', '실제 조사 내용'], '--evidence @파일');

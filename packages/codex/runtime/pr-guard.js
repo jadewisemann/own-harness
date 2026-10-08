@@ -40,7 +40,7 @@ export function reject_internal_metadata(text) {
     const local_path = /\/(?:[^\s<>)\]`/]*\/)*(?:\.harness|\.worktrees?|\.sub-workspace)(?:\/|\b)/;
     const task_path = common.private_task_pattern();
     if (local_path.test(text) || task_path.test(text) || text.includes(WORKSPACE + '/') || /\.harness[/\\]private(?:[/\\]|\b)/.test(text) ||
-        /(?<![\w])(?:WORK|task)\.md\b|<!--\s*own-harness-work\b|```own-harness-work\b/i.test(text)) {
+        /(?<![\w])(?:WORK|task)\.md\b|\.harness-state\.json\b|<!--\s*own-harness-work\b|```own-harness-work\b/i.test(text)) {
         throw new Error('PR.md에서 로컬 경로·작업 기록 참조·own-harness-work 메타데이터를 제거하세요.');
     }
     const fields = 'task_id|base_sha|head_sha|verified_state|workspace_root|task_workspace|worktree_path|worker_id|worker_name|assignment_sha256|planning_sha256|workers_sha256|current_fingerprint|verified_fingerprint|contract_sha256|control_mode';

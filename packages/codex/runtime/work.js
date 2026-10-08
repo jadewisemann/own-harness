@@ -8,6 +8,7 @@ import { parseArgs } from 'node:util';
 import * as common from './harness_common.js';
 import { require, digest, atomic_write, git } from './harness_common.js';
 import * as delegation from './delegation.js';
+import { taskWritingRules } from './task-format.js';
 import * as steering from './steering.js';
 
 export { common };
@@ -35,6 +36,7 @@ export function contained(value, parent = ROOT) { return common.contained(value,
 export function safe_path(...parts) { return common.safe_path(ROOT, ...parts); }
 export function task_path(task) { return safe_path('work', task_name(task)); }
 export function work_path(task) { return common.task_work_path(task_name(task), ROOT); }
+export function state_path(task) { return safe_path(path.relative(ROOT, path.dirname(work_path(task))), common.TASK_STATE); }
 export function control_path(task) { return safe_path('.harness', 'private', 'work-control', task_name(task) + '.json'); }
 export function locked(task, callback) { return common.with_lock(control_path(task).replace(/\.json$/, '.lock.d'), callback); }
 export function checkout_info(cwd, task = null) { return common.checkout_info(cwd, task, ROOT); }
@@ -43,10 +45,7 @@ export function read_work(task) {
   const file = work_path(task);
   require(is_file(file), `작업 기록이 없습니다: ${file}; work.js init을 먼저 실행하세요.`);
   const text = fs.readFileSync(file, 'utf8');
-  const matches = [...text.matchAll(BLOCK)];
-  require(matches.length === 1 && text.split(BEGIN).length === 2 && text.split(END).length === 2, '작업 기록 metadata 블록이 없거나 중복·손상됐습니다.');
-  let data;
-  try { data = JSON.parse(matches[0][1]); } catch { throw new Error('작업 기록 JSON metadata를 읽을 수 없습니다.'); }
+  const data = common.task_registration(ROOT, task);
   require(object(data) && data.task_id === task && data.schema === 1, '작업 기록 작업 ID 또는 schema가 다릅니다.');
   require(['pstack', 'human'].includes(data.control_mode) && PHASES.includes(data.phase), '작업 기록 제어 모드 또는 단계가 잘못됐습니다.');
   require(object(data.repos) && Object.keys(data.repos).length && object(data.phases), '작업 기록 repos/phases가 잘못됐습니다.');
@@ -60,6 +59,14 @@ export function body_of(text) { return text.replace(BLOCK, '').trim(); }
 export function contract(text) {
   const body = body_of(text);
   const match = /^## 작업 계약\s*\n([\s\S]*?)(?=^## |(?![\s\S]))/m.exec(body);
+  if (!match) {
+    const sections = [['목표'], ['범위'], ['하지 않을 일', '비목표'], ['완료 조건'], ['결정 사항', '설계 결정과 미정 사항']].map(names => {
+      const found = [...body.matchAll(new RegExp(`^## (?:${names.join('|')})[ \\t]*\\r?\\n([\\s\\S]*?)(?=^## |$(?![\\s\\S]))`, 'gm'))];
+      require(found.length === 1 && found[0][1].trim() && !/^(todo|tbd|작성 필요)$/i.test(found[0][1].trim()), `작업 계약의 ${names[0]} 내용을 작성하세요.`);
+      return [names[0], found[0][1].trim()];
+    });
+    return JSON.stringify(sections);
+  }
   require(match, '작업 기록에 ## 작업 계약과 목표·범위·완료 조건을 작성하세요.');
   const value = match[1].trim();
   for (const label of ['목표', '범위', '완료 조건']) {
@@ -80,6 +87,12 @@ export function contract_digest(text, data) {
 
 export function save_work(task, text, data) {
   data.updated_at = now();
+  if (!text.includes(BEGIN) && !text.includes(END)) {
+    atomic_write(state_path(task), JSON.stringify(data, null, 2) + '\n');
+    atomic_write(work_path(task), text.trimEnd() + '\n');
+    return;
+  }
+  require(!fs.existsSync(state_path(task)), '작업 상태 파일과 metadata 블록이 중복됐습니다.');
   const block = BEGIN + '\n```json\n' + JSON.stringify(data, null, 2) + '\n```\n' + END;
   atomic_write(work_path(task), text.includes(BEGIN) ? text.replace(BLOCK, () => block) : text.trimEnd() + '\n\n' + block + '\n');
 }
@@ -210,11 +223,11 @@ export function init(task, cwd, base, scopes) {
     fs.mkdirSync(safe_path('work', task, 'evidence'), { recursive: true });
     const file = work_path(task);
     const control = read_control(task);
-    let text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : `# ${task}\n\n## 작업 계약\n\n- 목표: 작성 필요\n- 범위: 작성 필요\n- 완료 조건: 작성 필요\n`;
+    let text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : `# ${task}\n\n${['목표', '범위', '하지 않을 일', '완료 조건', '결정 사항'].map(h => `## ${h}\n\n작성 필요`).join('\n\n')}\n`;
     let data;
-    if (text.includes(BEGIN) || text.includes(END)) [text, data] = read_work(task);
+    if (text.includes(BEGIN) || text.includes(END) || fs.existsSync(state_path(task))) [text, data] = read_work(task);
     else {
-      if (!/^## 작업 계약\s*$/m.test(text)) text = text.trimEnd() + '\n\n## 작업 계약\n\n- 목표: 작성 필요\n- 범위: 작성 필요\n- 완료 조건: 작성 필요\n';
+      if (!/^## (?:작업 계약|목표)\s*$/m.test(text)) text = text.trimEnd() + '\n\n## 작업 계약\n\n- 목표: 작성 필요\n- 범위: 작성 필요\n- 완료 조건: 작성 필요\n';
       data = { schema: 1, task_id: task, control_mode: control.mode ?? 'pstack', phase: 'research', repos: {}, phases: {}, workers: {} };
     }
     text = delegation.scaffold(text, delegation.request(control));
@@ -602,7 +615,12 @@ export function public_text(file) {
 }
 
 export function hook(event) {
-  return steering.hook(event, control_hook(event));
+  const result = steering.hook(event, control_hook(event));
+  if (event.hook_event_name === 'UserPromptSubmit') {
+    result.hookSpecificOutput ??= { hookEventName: 'UserPromptSubmit' };
+    result.hookSpecificOutput.additionalContext = [result.hookSpecificOutput.additionalContext, taskWritingRules].filter(Boolean).join('\n\n');
+  }
+  return result;
 }
 
 function control_hook(event) {

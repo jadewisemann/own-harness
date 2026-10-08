@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { activateWorkspace, preparePolicy, registerPolicy } from './policy.js';
+import { activateWorkspace, preparePolicy, registerPolicy, TASK_STATE, taskWritingRules, repositoryPaths } from './policy.js';
 
 const validName = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
@@ -27,8 +27,8 @@ function directory(parent, name, create = false) {
 export function workspace(cwd) {
   let current = fs.realpathSync(cwd);
   while (true) {
-    if (exists(path.join(current, 'repository'))) {
-      directory(current, 'repository');
+    if (exists(path.join(current, '.harness/config.json')) || exists(path.join(current, 'repository'))) {
+      repositoryPaths(current);
       return current;
     }
     const parent = path.dirname(current);
@@ -42,14 +42,15 @@ function taskPath(root, name) {
   return path.join(root, 'work', name);
 }
 
-export function createWork(cwd, args, brief) {
+export function createWork(cwd, args, brief, title, selectedBranch) {
   const [name, ...specs] = args.trim().split(/\s+/);
   const root = workspace(cwd);
   const target = taskPath(root, name);
   if (!specs.length) throw new Error('/work-init 작업명 저장소=기준ref ... 형식으로 실행하세요.');
   if (exists(path.join(root, 'work'))) directory(root, 'work');
   if (exists(target)) throw new Error(`이미 있는 작업은 덮어쓰지 않습니다: ${target}`);
-  const branch = `work/${name}`;
+  const branch = selectedBranch ?? `work/${name}`;
+  if (typeof branch !== 'string' || !branch || /\s/.test(branch) || branch.startsWith('-')) throw new Error('유효한 작업 브랜치를 지정하세요.');
   const seen = new Set();
   const repos = specs.map(spec => {
     const separator = spec.indexOf('=');
@@ -59,13 +60,15 @@ export function createWork(cwd, args, brief) {
       throw new Error(`중복 없이 저장소=기준ref를 지정하세요: ${spec}`);
     }
     seen.add(repo);
-    const source = directory(path.join(root, 'repository'), repo);
+    const source = repositoryPaths(root)[repo];
+    if (!source) throw new Error(`설정에 없는 저장소입니다: ${repo}`);
     if (fs.realpathSync(git(source, 'rev-parse', '--show-toplevel')) !== source) {
       throw new Error(`저장소 루트가 아닙니다: ${source}`);
     }
     const common = fs.realpathSync(git(source, 'rev-parse', '--path-format=absolute', '--git-common-dir'));
     if (seen.has(common)) throw new Error('같은 Git 저장소를 두 번 지정할 수 없습니다.');
     seen.add(common);
+    git(source, 'check-ref-format', '--branch', branch);
     const sha = git(source, 'rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`);
     if (git(source, 'branch', '--list', branch)) throw new Error(`이미 있는 브랜치입니다: ${repo} ${branch}`);
     return { repo, source, ref, sha };
@@ -74,16 +77,23 @@ export function createWork(cwd, args, brief) {
   directory(root, 'work', true);
   fs.mkdirSync(target);
   directory(target, '.sub-workspace', true);
-  fs.writeFileSync(path.join(target, 'task.md'), `# ${name}\n\n${brief ?? ['목표', '범위', '비목표', '완료 조건', '설계 결정과 미정 사항'].map(h => `## ${h}\n\n작성 필요`).join('\n\n')}\n\n## 결정·진행·검증·다음 행동\n\n- 재개할 때 아래 저장소별 worktree의 존재와 Git 상태를 확인한다.\n- 다음 세션은 이 문서와 실제 Git 상태를 확인하고 이어간다.\n- 이 문서는 commit·push·PR·배포 승인을 대신하지 않는다.\n\n## 저장소 기준\n\n${repos.map(r => `- ${r.repo}: ${r.ref} → ${r.sha}, 브랜치 ${branch}`).join('\n')}\n`, { flag: 'wx' });
+  fs.writeFileSync(path.join(target, 'task.md'), `# ${title ?? name}\n\n${brief ?? ['목표', '범위', '하지 않을 일', '완료 조건', '결정 사항'].map(h => `## ${h}\n\n작성 필요`).join('\n\n')}\n`, { flag: 'wx' });
+  fs.writeFileSync(path.join(target, TASK_STATE), JSON.stringify({ schema: 1, task_id: name, control_mode: 'pstack', phase: 'research', phases: {}, workers: {},
+    repos: Object.fromEntries(repos.map(r => [r.repo, { checkout: path.join(target, r.repo), base_ref: r.ref, base_sha: r.sha, branch, scope: [], verified_fingerprint: null }])) }, null, 2) + '\n', { flag: 'wx' });
   try {
-    for (const repo of repos) git(repo.source, 'worktree', 'add', '-b', branch, path.join(target, repo.repo), repo.sha);
+    for (const repo of repos) {
+      const checkout = path.join(target, repo.repo);
+      git(repo.source, 'worktree', 'add', '-b', branch, checkout, repo.sha);
+      const installer = path.join(root, '.harness/harness.js');
+      if (exists(installer)) execFileSync(process.execPath, [installer, 'prepare', checkout], { stdio: 'pipe' });
+    }
   } catch (error) {
     throw new Error(`일부 준비가 실패했습니다. 생성된 파일·worktree는 보존했습니다. ${target}의 Git 상태를 확인하세요.\n${error.message}`);
   }
   return openWork(cwd, name);
 }
 
-export function openWork(cwd, name) {
+function workSessions(cwd, name) {
   const root = workspace(cwd);
   const target = taskPath(root, name.trim());
   directory(root, 'work');
@@ -91,21 +101,48 @@ export function openWork(cwd, name) {
   const sub = directory(target, '.sub-workspace');
   const task = path.join(target, 'task.md');
   if (!fs.lstatSync(task).isFile()) throw new Error(`일반 파일이 필요합니다: ${task}`);
-  const repos = fs.readdirSync(target).filter(name => validName.test(name) && exists(path.join(target, name, '.git')));
-  const commands = [];
+  const metadata = preparePolicy(root, target);
+  const repos = metadata.names;
+  const sessions = [];
   for (const repo of repos) {
-    const checkout = directory(target, repo);
-    const source = directory(path.join(root, 'repository'), repo);
+    const checkout = Array.isArray(metadata.repos) ? directory(target, repo) : metadata.repos[repo].checkout;
+    const source = repositoryPaths(root)[repo];
+    if (!source) throw new Error(`설정에 없는 저장소입니다: ${repo}`);
     const common = dir => fs.realpathSync(git(dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'));
     if (common(source) !== common(checkout) || fs.realpathSync(git(checkout, 'rev-parse', '--show-toplevel')) !== checkout) {
       throw new Error(`원본 저장소에 연결된 worktree가 아닙니다: ${checkout}`);
     }
-    commands.push(`OMP_WORKTREE_DIR=${quote(sub)} omp --cwd ${quote(checkout)} --session-dir ${quote(path.join(target, '.sessions', repo))} ${quote(`@${task}`)}`);
+    const args = ['--cwd', checkout, '--session-dir', path.join(target, '.sessions', repo), `@${task}`];
+    sessions.push({ repo, checkout, sub, args });
   }
-  if (!commands.length) throw new Error('작업에 연결된 worktree가 없습니다.');
+  if (!sessions.length) throw new Error('작업에 연결된 worktree가 없습니다.');
   activateWorkspace(root);
   preparePolicy(root, target);
+  return { task, sessions };
+}
+
+export function openWork(cwd, name) {
+  const { task, sessions } = workSessions(cwd, name);
+  const commands = sessions.map(s => `OMP_WORKTREE_DIR=${quote(s.sub)} omp ${s.args.map(quote).join(' ')}`);
   return `작업 문서: ${task}\n목표·범위·완료 조건과 현재 Git 상태를 확인한 뒤 아래 명령으로 이어가세요.\n각 명령은 해당 저장소용 새 omp 세션을 시작합니다.\n\n${commands.join('\n\n')}\n\n.sub-workspace는 omp 전용 임시 공간입니다. task 도구의 격리 활성화 여부는 omp 설정을 따릅니다. /wt·PR checkout도 이 경로를 사용하므로 영구 작업을 두지 마세요.`;
+}
+
+async function offerWorkTab(pi, ctx, name, fallback, autoStart = false) {
+  if (!ctx.hasUI || process.env.TERM_PROGRAM?.toLowerCase() !== 'tern') return fallback;
+  try {
+    const { task, sessions } = workSessions(ctx.cwd, name);
+    const choices = sessions.map(s => `새 탭에서 시작: ${s.repo}`);
+    const selected = autoStart && sessions.length === 1 ? choices[0]
+      : await ctx.ui.select('작업을 Tern 새 탭에서 시작할까요?', [...choices, '나중에 시작']);
+    const session = sessions[choices.indexOf(selected)];
+    if (!session) return fallback;
+    const result = await pi.exec('tern', ['new', 'tab', '--cwd', session.checkout, '--',
+      '/usr/bin/env', `PATH=${process.env.PATH}`, `OMP_WORKTREE_DIR=${session.sub}`, 'omp', ...session.args], { timeout: 10000 });
+    if (result.code !== 0 || result.killed) throw new Error(result.stderr || 'Tern 새 탭 요청에 실패했습니다.');
+    return `Tern에 ${session.repo} 작업용 새 탭을 열었습니다.\n작업 문서: ${task}\n새 탭에서 OMP 시작 상태를 확인하세요. 기존 탭의 대화는 유지됩니다.`;
+  } catch (error) {
+    return `작업은 준비돼 있지만 새 탭 열기를 완료하지 못했습니다: ${error.message}\n이미 열린 탭이 있는지 확인한 뒤 /work-open ${name}으로 다시 시도하거나 아래 명령을 사용하세요.\n\n${fallback}`;
+  }
 }
 
 export function nextNamePrefix(root, now = new Date()) {
@@ -123,27 +160,27 @@ export function nextNamePrefix(root, now = new Date()) {
 
 export function startWorkConversation(cwd, idea = '') {
   const root = workspace(cwd);
-  const repoRoot = path.join(root, 'repository');
-  const repos = fs.readdirSync(repoRoot, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => {
-    const source = path.join(repoRoot, e.name);
+  const repos = Object.entries(repositoryPaths(root)).map(([name, source]) => {
     try {
       const branch = git(source, 'branch', '--show-current') || '(detached HEAD)';
       const refs = git(source, 'for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes').split('\n').filter(Boolean);
-      return { name: e.name, currentBranch: branch, refs };
-    } catch { return { name: e.name, error: 'Git 정보를 확인하지 못함' }; }
+      return { name, currentBranch: branch, refs };
+    } catch { return { name, error: 'Git 정보를 확인하지 못함' }; }
   });
   return { root, prompt: `플러그인의 /work-init 안내입니다. 이것은 작업 생성이나 구현에 대한 사용자 승인이 아닙니다.
 사용자와 대화하며 작업을 구체화하세요. 아직 파일이나 worktree를 만들지 마세요.
 workspace: ${root}
 사용자가 덧붙인 아이디어: ${JSON.stringify(idea)}
 발견한 저장소와 로컬 ref: ${JSON.stringify(repos)}
-1. workspace와 선택할 저장소의 AGENTS.md 및 관련 설계를 읽고, 이미 대화에서 답한 내용은 다시 묻지 마세요.
+1. workspace와 선택할 저장소의 AGENTS.md·AGENTS.override.md 및 관련 설계를 읽고, 이미 대화에서 답한 내용은 다시 묻지 마세요.
 2. 해결할 문제·원하는 결과부터 대화하세요. 이어서 범위·비목표·완료 조건을 정리하세요. 한 번에 질문을 쏟아내지 마세요.
-3. 필요한 저장소와 기준 ref는 위 정보를 바탕으로 제안하세요. 현재 브랜치가 원하는 기준이라고 단정하지 마세요.
+3. 필요한 저장소와 기준 ref는 위 정보를 바탕으로 제안하세요. 현재 브랜치가 원하는 기준이라고 단정하지 마세요. 저장소의 브랜치 이름 규칙이 있으면 branch 필드에 그 규칙에 맞는 이름을 지정하세요.
 4. 이름은 YY-MM-DD__NN__짧은-영문-설명 형식입니다. 현재 한국 날짜의 다음 접두사는 ${nextNamePrefix(root)} 입니다. 이름 후보를 제안하고 사용자 선호를 반영하세요.
-5. task.md가 이 작업의 아이디어와 설계 범위를 관리하는 정본이 되도록 goal, scope, nonGoals, acceptance, decisions를 작성하세요. 확정된 결정과 미정 사항을 구분하세요.
+5. task.md는 사용자가 먼저 읽는 문서입니다. title에는 읽기 쉬운 한국어 작업 제목을, goal, scope, nonGoals, acceptance, decisions에는 짧은 초안을 작성하세요. 확정된 결정과 미정 사항을 구분하세요.
 6. 대화가 정리되면 work_create 도구로 이름·저장소·문서 초안을 제출하세요. 사용자가 직접 확인하는 화면을 거쳐 생성됩니다. 사용자에게 긴 /work-init 명령을 조립하거나 다시 입력하도록 요구하지 마세요.
-7. 다른 도구로 대신 폴더를 생성하지 마세요. 생성 후에는 work_create가 반환한 재개 명령을 안내하세요.` };
+7. 다른 도구로 대신 폴더를 생성하지 마세요. 생성 후에는 work_create가 반환한 새 탭 열기 결과 또는 재개 명령을 안내하세요.
+
+${taskWritingRules}` };
 }
 
 export default function workExtension(pi) {
@@ -158,6 +195,8 @@ export default function workExtension(pi) {
     description: '/work-init 대화에서 정리한 작업을 사용자 확인 후 생성합니다. 이름은 YY-MM-DD__NN__short-description 형식입니다.',
     parameters: z.object({
       name: z.string(),
+      title: z.string().optional(),
+      branch: z.string().optional(),
       repos: z.array(z.object({ name: z.string(), ref: z.string() })),
       goal: z.string(), scope: z.string(), nonGoals: z.string(), acceptance: z.string(), decisions: z.string(),
     }),
@@ -172,6 +211,7 @@ export default function workExtension(pi) {
       }
       const prefix = nextNamePrefix(draftingRoot);
       if (!params.name.startsWith(prefix)) throw new Error(`현재 날짜·다음 작업 번호는 ${prefix} 입니다. 이름을 다시 제안하세요.`);
+      if (params.title !== undefined && (!params.title.trim() || /[\r\n]/.test(params.title))) throw new Error('작업 제목은 비어 있지 않은 한 줄로 쓰세요.');
       for (const field of ['goal', 'scope', 'nonGoals', 'acceptance', 'decisions']) {
         if (typeof params[field] !== 'string' || !params[field].trim() || params[field].trim() === '작성 필요') {
           throw new Error(`${field} 내용을 사용자와 정리하세요.`);
@@ -181,27 +221,46 @@ export default function workExtension(pi) {
         throw new Error('저장소 이름과 기준 ref를 확인하세요.');
       }
       const args = `${params.name} ${params.repos.map(r => `${r.name}=${r.ref}`).join(' ')}`;
-      const brief = `이 문서는 이 작업의 아이디어·설계·범위·완료 조건을 관리하는 정본이다. 프로젝트 전체의 DESIGN.md와 충돌하는 결정은 먼저 조정한다.\n\n## 목표\n\n${params.goal}\n\n## 범위\n\n${params.scope}\n\n## 비목표\n\n${params.nonGoals}\n\n## 완료 조건\n\n${params.acceptance}\n\n## 설계 결정과 미정 사항\n\n${params.decisions}`;
+      const brief = `## 목표\n\n${params.goal}\n\n## 범위\n\n${params.scope}\n\n## 하지 않을 일\n\n${params.nonGoals}\n\n## 완료 조건\n\n${params.acceptance}\n\n## 결정 사항\n\n${params.decisions}`;
       creating = true;
       try {
         if (signal?.aborted) throw new Error('작업 생성이 취소됐습니다.');
-        const confirmed = await ctx.ui.confirm('이 작업으로 만들까요?', `이름: ${params.name}\n저장소: ${params.repos.map(r => `${r.name}=${r.ref}`).join(', ')}\n\n${brief}`);
+        const confirmed = await ctx.ui.confirm('이 작업으로 만들까요?', `${params.title ?? params.name}\n폴더: ${params.name}\n브랜치: ${params.branch ?? `work/${params.name}`}\n저장소: ${params.repos.map(r => `${r.name}=${r.ref}`).join(', ')}\n\n${brief}`);
         if (!confirmed || signal?.aborted) return { content: [{ type: 'text', text: '생성하지 않았습니다. 대화를 이어가며 초안을 수정할 수 있습니다.' }], details: { created: false } };
-        const result = createWork(draftingRoot, args, brief);
+        const result = createWork(draftingRoot, args, brief, params.title?.trim(), params.branch);
         draftingRoot = undefined;
-        return { content: [{ type: 'text', text: result }], details: { created: true } };
+        const handoff = signal?.aborted ? result : await offerWorkTab(pi, ctx, params.name, result);
+        return { content: [{ type: 'text', text: handoff }], details: { created: true } };
       } finally { creating = false; }
     },
   });
   for (const [name, description, run] of [
     ['work-init', '대화로 작업 정의·이름·저장소를 정한 뒤 생성. 아이디어를 덧붙여도 됩니다.', createWork],
-    ['work-open', '기존 작업의 저장소별 omp 재개 명령 표시: 작업명', openWork],
+    ['work-open', '기존 작업을 목록에서 골라 Tern 새 탭에서 시작. 작업명을 직접 지정해도 됩니다.', openWork],
   ]) {
     pi.registerCommand(name, {
       description,
       handler: async (args, ctx) => {
         try {
           if (ctx.agent?.kind === 'sub') throw new Error('작업 준비·인계 명령은 부모 세션에서 실행하세요.');
+          if (name === 'work-open' && !args.trim()) {
+            if (!ctx.hasUI) throw new Error('대화형 omp 세션에서 실행하거나 /work-open 작업명으로 지정하세요.');
+            const root = workspace(ctx.cwd);
+            const work = path.join(root, 'work');
+            const choices = exists(work) ? fs.readdirSync(directory(root, 'work'), { withFileTypes: true })
+              .filter(entry => entry.isDirectory() && validName.test(entry.name))
+              .filter(entry => {
+                const task = path.join(work, entry.name, 'task.md');
+                return exists(task) && fs.lstatSync(task).isFile();
+              }).map(entry => entry.name).sort().reverse() : [];
+            if (!choices.length) {
+              ctx.ui.notify('기존 작업이 없습니다. /work-init으로 먼저 작업을 만드세요.', 'info');
+              return;
+            }
+            const selected = await ctx.ui.select('새 탭에서 열 작업을 선택하세요.', choices);
+            if (!choices.includes(selected)) return;
+            args = selected;
+          }
           if (name === 'work-init' && !/^\S+\s+\S+=\S+(?:\s+\S+=\S+)*$/.test(args.trim())) {
             const conversation = startWorkConversation(ctx.cwd, args);
             activateWorkspace(conversation.root);
@@ -210,8 +269,9 @@ export default function workExtension(pi) {
             return;
           }
           const result = run(ctx.cwd, args);
-          ctx.ui.setEditorText(result);
-          ctx.ui.notify('작업 안내와 실행 명령을 입력창에 표시했습니다. 터미널에서 실행하세요.', 'info');
+          const handoff = await offerWorkTab(pi, ctx, args.trim().split(/\s+/)[0], result, name === 'work-open');
+          ctx.ui.setEditorText(handoff);
+          ctx.ui.notify('새 탭 열기 결과 또는 실행 명령을 입력창에 표시했습니다.', 'info');
         } catch (error) { ctx.ui.notify(error.message, 'error'); }
       },
     });

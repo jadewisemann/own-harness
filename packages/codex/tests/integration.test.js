@@ -75,10 +75,11 @@ function repository(repo, tracked_agents = false) {
 }
 function fill_contract(file) {
     let text = fs.readFileSync(file, 'utf8');
-    assert.ok(text.includes('own-harness-work:v1'));
-    for (const [label, value] of [['목표', '임시 파일 전달 흐름을 확인한다'], ['범위', '임시 저장소와 검사'], ['완료 조건', '실제 CLI와 로컬 Git 전달 검사 통과']]) {
-        assert.ok(text.includes(label + ': 작성 필요'), text);
-        text = text.replace(label + ': 작성 필요', label + ': ' + value);
+    assert.ok(fs.existsSync(path.join(path.dirname(file), '.harness-state.json')));
+    assert.ok(!text.includes('own-harness-work:v1'));
+    for (const [label, value] of [['목표', '임시 파일 전달 흐름을 확인한다'], ['범위', '임시 저장소와 검사'], ['완료 조건', '실제 CLI와 로컬 Git 전달 검사 통과'], ['하지 않을 일', '원격 전달은 하지 않는다'], ['결정 사항', '임시 저장소의 실제 Git으로 검사한다']]) {
+        assert.ok(text.includes('## ' + label + '\n\n작성 필요'), text);
+        text = text.replace('## ' + label + '\n\n작성 필요', '## ' + label + '\n\n' + value);
     }
     fs.writeFileSync(file, text, 'utf8');
 }

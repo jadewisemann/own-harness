@@ -32,7 +32,8 @@ test('one WORK manages optional worker checkouts, local results, integration and
   const workFile = path.join(taskRoot, 'task.md');
   const lead = path.join(taskRoot, 'project');
   const worker = name => path.join(taskRoot, '.sub-workspace', name, 'project');
-  const data = () => JSON.parse(fs.readFileSync(workFile, 'utf8').match(/<!-- own-harness-work:v1 -->\n```json\n([\s\S]*?)\n```/)[1]);
+  const stateFile = path.join(taskRoot, '.harness-state.json');
+  const data = () => JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   const evidence = (name, text = 'Executed the fixture checks and inspected the changed user path.\n') => {
     const file = path.join(taskRoot, 'evidence', name + '.md');
     fs.writeFileSync(file, text);
@@ -61,16 +62,17 @@ test('one WORK manages optional worker checkouts, local results, integration and
     expect(fs.existsSync(path.join(taskRoot, '.worktrees'))).toBe(false);
     expect(fs.existsSync(path.join(root, '.harness/private/work/change/WORK.md'))).toBe(false);
     const initialWork = fs.readFileSync(workFile, 'utf8');
-    const initialMetadata = initialWork.match(/<!-- own-harness-work:v1 -->\n```json\n([\s\S]*?)\n```/)[1];
+    const initialMetadata = fs.readFileSync(stateFile, 'utf8');
     const malformed = JSON.parse(initialMetadata);
     const unexpectedCheckout = path.join(temporary, 'unexpected', 'checkout');
     malformed.repos.project.checkout = unexpectedCheckout;
     malformed.repos.project.branch = 'codex/unsafe-recreation';
-    fs.writeFileSync(workFile, initialWork.replace(initialMetadata, () => JSON.stringify(malformed, null, 2)));
+    fs.writeFileSync(stateFile, JSON.stringify(malformed, null, 2));
     denied('start', 'change', '--repo', 'project', '--base', 'main', '--branch', 'codex/unsafe-recreation');
     expect(fs.existsSync(unexpectedCheckout)).toBe(false);
     expect(git(root, 'branch', '--list', 'codex/unsafe-recreation')).toBe('');
     fs.writeFileSync(workFile, initialWork);
+    fs.writeFileSync(stateFile, initialMetadata);
     const publicDocument = path.join(temporary, 'public.md');
     for (const content of ['work/change/evidence/report.md', 'work/change/repos/project', 'work/change/.worktrees/first', 'assignment_sha256: copied', '"planning_sha256": "copied"', '- workers_sha256: copied']) {
       fs.writeFileSync(publicDocument, content);
@@ -149,7 +151,7 @@ test('one WORK manages optional worker checkouts, local results, integration and
     git(worker('first'), 'restore', '--', 'a.txt');
     const firstReceipt = JSON.stringify(data().workers.first.result);
     // Accepted worker commits are historical receipts. A revised plan needs fresh task verification.
-    fs.writeFileSync(workFile, fs.readFileSync(workFile, 'utf8').replace('목표: ', '목표: 통합 후 재검토한 '));
+    fs.writeFileSync(workFile, fs.readFileSync(workFile, 'utf8').replace('## 목표\n', '## 목표\n\n통합 후 재검토했다.'));
     denied('check', '--cwd', lead, '--delivery');
     for (const phase of ['research', 'design', 'implementation', 'verification']) record(phase);
     check();
@@ -161,7 +163,7 @@ test('one WORK manages optional worker checkouts, local results, integration and
     expect(data().workers.first.result).toBeDefined();
     expect(git(lead, 'rev-parse', '--verify', data().workers.first.branch)).toBeTruthy();
     check(); // Cleanup changes location bookkeeping, not the validated integrated result.
-    fs.writeFileSync(workFile, fs.readFileSync(workFile, 'utf8').replace('목표: ', '목표: 정리 후 재검토한 '));
+    fs.writeFileSync(workFile, fs.readFileSync(workFile, 'utf8').replace('## 목표\n', '## 목표\n\n정리 후 재검토했다.'));
     denied('check', '--cwd', lead, '--delivery');
     for (const phase of ['research', 'design', 'implementation', 'verification']) record(phase);
     check();

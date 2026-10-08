@@ -26,7 +26,7 @@ export function git(...args) {
 }
 export function internal_path(file) {
     const parts = file.split('/');
-    return ['WORK.md', 'task.md', 'WORK.metadata.json', 'WORK.metadata.yaml'].includes(path.posix.basename(file)) ||
+    return ['WORK.md', 'task.md', '.harness-state.json', 'WORK.metadata.json', 'WORK.metadata.yaml'].includes(path.posix.basename(file)) ||
         (parts.length > 1 && parts[0] === '.harness' && parts[1].startsWith('private')) ||
         (parts[0] === 'work' && common.private_task_pattern().test(file));
 }

@@ -5,12 +5,15 @@ import { execFileSync } from 'node:child_process';
 import { readState, executionReason } from '../codex/runtime/steering-state.js';
 
 const WORKSPACE = '.own-harness-workspace.json';
-const TASK = '.own-harness-work.json';
+export const TASK_STATE = '.harness-state.json';
+const LEGACY_TASK = '.own-harness-work.json';
 const NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-const fields = ['목표', '범위', '비목표', '완료 조건', '설계 결정과 미정 사항'];
+const fields = [['목표'], ['범위'], ['하지 않을 일', '비목표'], ['완료 조건'], ['결정 사항', '설계 결정과 미정 사항']];
 const readTools = new Set(['read', 'grep', 'find', 'ls', 'glob', 'web_search', 'fetch', 'search_tool', 'tool_search']);
 // OMP가 같은 프로세스에서 새 factory로 자식을 만들므로, 작업별 부모 연결만 공유한다.
 const bindings = new Map();
+export { taskWritingRules } from '../codex/runtime/task-format.js';
+import { taskWritingRules } from '../codex/runtime/task-format.js';
 const rules = `## 작업 운영 규칙
 
 - task.md는 이 작업의 아이디어·목표·범위·비목표·설계 결정·완료 조건을 관리하는 정본이다.
@@ -22,6 +25,8 @@ const rules = `## 작업 운영 규칙
 - 저장소별 지침은 .work-rules/<저장소>.md에 있으며 배정받은 저장소의 지침만 적용한다.
 - task.md 필수 항목이 미완성이면 조회와 부모의 task.md 보완만 진행한다.
 - 훅은 문서 준비 상태와 지원되는 도구의 경로를 검사한다. 의미상 설계 준수나 OS 파일 격리를 보장하지 않는다.
+
+${taskWritingRules}
 `;
 
 function present(file) {
@@ -53,6 +58,25 @@ function within(parent, target) {
 }
 function common(dir) { return fs.realpathSync(git(dir, 'rev-parse', '--path-format=absolute', '--git-common-dir')); }
 
+export function repositoryPaths(root) {
+  const config = path.join(root, '.harness/config.json');
+  let mapping;
+  if (present(config)) {
+    const data = JSON.parse(textFile(config));
+    if (data.schema !== 1 || !data.repos || Array.isArray(data.repos)) throw new Error('저장소 설정이 손상됐습니다.');
+    mapping = data.repos;
+  } else {
+    const folder = realDir(path.join(root, 'repository'));
+    mapping = Object.fromEntries(fs.readdirSync(folder, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => [e.name, `repository/${e.name}`]));
+  }
+  return Object.fromEntries(Object.entries(mapping).map(([name, relative]) => {
+    if (!NAME.test(name) || typeof relative !== 'string' || !relative || path.isAbsolute(relative) || relative.split(path.sep).includes('..')) throw new Error('잘못된 저장소 경로입니다.');
+    const source = realDir(path.resolve(root, relative));
+    if (fs.realpathSync(source) !== source) throw new Error('저장소 경로에 링크를 사용할 수 없습니다.');
+    return [name, source];
+  }));
+}
+
 export function activateWorkspace(root) {
   writeNew(path.join(root, WORKSPACE), '{"schema":1}\n');
   if (JSON.parse(textFile(path.join(root, WORKSPACE))).schema !== 1) throw new Error('지원하지 않는 workspace 정책입니다.');
@@ -73,11 +97,12 @@ function inheritedRules(root) {
 
 export function preparePolicy(root, taskDir) {
   realDir(taskDir);
-  const metadataPath = path.join(taskDir, TASK);
+  const metadataPath = path.join(taskDir, present(path.join(taskDir, TASK_STATE)) ? TASK_STATE : present(path.join(taskDir, LEGACY_TASK)) ? LEGACY_TASK : TASK_STATE);
   let metadata;
   if (present(metadataPath)) {
     metadata = JSON.parse(textFile(metadataPath));
-    if (metadata.schema !== 1 || !Array.isArray(metadata.repos) || !metadata.repos.length || metadata.repos.some(n => typeof n !== 'string' || !NAME.test(n))) {
+    const names = Array.isArray(metadata.repos) ? metadata.repos : Object.keys(metadata.repos ?? {});
+    if (metadata.schema !== 1 || !names.length || names.some(n => typeof n !== 'string' || !NAME.test(n)) || (!Array.isArray(metadata.repos) && metadata.task_id !== path.basename(taskDir))) {
       throw new Error('작업 연결 기록이 손상됐습니다.');
     }
   } else {
@@ -85,9 +110,13 @@ export function preparePolicy(root, taskDir) {
     if (!repos.length) throw new Error('작업에 등록할 worktree가 없습니다.');
     metadata = { schema: 1, repos };
   }
-  for (const repo of metadata.repos) {
-    const source = realDir(path.join(root, 'repository', repo));
-    const checkout = realDir(path.join(taskDir, repo));
+  const names = Array.isArray(metadata.repos) ? metadata.repos : Object.keys(metadata.repos);
+  const sources = repositoryPaths(root);
+  for (const repo of names) {
+    const source = sources[repo];
+    if (!source) throw new Error(`설정에 없는 저장소입니다: ${repo}`);
+    const checkout = realDir(Array.isArray(metadata.repos) ? path.join(taskDir, repo) : metadata.repos[repo].checkout);
+    if (![path.join(taskDir, repo), path.join(root, '.worktrees', path.basename(taskDir), repo), path.join(taskDir, 'repos', repo)].includes(checkout)) throw new Error('등록된 작업 경로가 아닙니다.');
     if (common(source) !== common(checkout) || fs.realpathSync(git(checkout, 'rev-parse', '--show-toplevel')) !== checkout) {
       throw new Error(`원본에 연결된 작업 worktree가 아닙니다: ${repo}`);
     }
@@ -98,16 +127,16 @@ export function preparePolicy(root, taskDir) {
   const agents = path.join(taskDir, 'AGENTS.md');
   if (present(agents)) textFile(agents);
   else writeNew(agents, `# 작업 지침\n\n${rules}\n${inheritedRules(root).map(s => `## 상속 출처: ${s.file}\n\n${s.body}`).join('\n\n')}`);
-  for (const repo of metadata.repos) {
+  for (const repo of names) {
     const snapshot = path.join(snapshots, `${repo}.md`);
     if (present(snapshot)) { textFile(snapshot); continue; }
     const checkoutRules = path.join(taskDir, repo, 'AGENTS.md');
-    const sourceRules = path.join(root, 'repository', repo, 'AGENTS.md');
+    const sourceRules = path.join(sources[repo], 'AGENTS.md');
     const file = present(checkoutRules) ? checkoutRules : present(sourceRules) ? sourceRules : null;
     writeNew(snapshot, file ? `# ${repo} 지침\n\n출처: ${file}\n\n${textFile(file)}` : `# ${repo} 지침\n\n생성 시 저장소 루트 AGENTS.md 없음.\n`);
   }
   writeNew(metadataPath, JSON.stringify(metadata, null, 2) + '\n');
-  return metadata;
+  return { ...metadata, names };
 }
 
 export function policyFor(ctx) {
@@ -120,20 +149,20 @@ export function policyFor(ctx) {
   }
   if (JSON.parse(textFile(path.join(root, WORKSPACE))).schema !== 1) throw new Error('지원하지 않는 workspace 정책입니다.');
   const relative = path.relative(root, cwd).split(path.sep);
-  if (relative[0] !== 'work' || !NAME.test(relative[1] ?? '')) return { root, cwd };
+  if (!['work', '.worktrees'].includes(relative[0]) || !NAME.test(relative[1] ?? '')) return { root, cwd };
   const taskDir = realDir(path.join(root, 'work', relative[1]));
   const metadata = preparePolicy(root, taskDir);
   const key = id => `${taskDir}\0${id}`;
   const bound = id => { const values = bindings.get(key(id)); return values?.size === 1 ? [...values][0] : undefined; };
-  let repo = metadata.repos.includes(relative[2]) ? relative[2] : undefined;
+  let repo = metadata.names.includes(relative[2]) ? relative[2] : undefined;
   if (relative[2] === '.sub-workspace') {
     repo = ctx.agent?.parentId ? bound(ctx.agent.parentId) : bound(ctx.agent?.id);
   }
   const child = ctx.agent?.kind === 'sub';
-  const checkout = repo ? (relative[2] === '.sub-workspace' ? fs.realpathSync(git(cwd, 'rev-parse', '--show-toplevel')) : path.join(taskDir, repo)) : undefined;
-  if (checkout && !within(taskDir, checkout)) throw new Error('배정된 작업 밖의 checkout입니다.');
+  const checkout = repo ? (relative[2] === '.sub-workspace' ? fs.realpathSync(git(cwd, 'rev-parse', '--show-toplevel')) : Array.isArray(metadata.repos) ? path.join(taskDir, repo) : metadata.repos[repo].checkout) : undefined;
+  if (checkout && !within(taskDir, checkout) && checkout !== path.join(root, '.worktrees', relative[1], repo)) throw new Error('배정된 작업 밖의 checkout입니다.');
   if (checkout && relative[2] === '.sub-workspace') {
-    const source = path.join(root, 'repository', repo);
+    const source = repositoryPaths(root)[repo];
     const registered = git(source, 'worktree', 'list', '--porcelain', '-z').split('\0').filter(row => row.startsWith('worktree ')).some(row => {
       try { return fs.realpathSync(row.slice(9)) === checkout; }
       catch (error) { if (error.code === 'ENOENT') return false; throw error; }
@@ -153,10 +182,10 @@ export function policyFor(ctx) {
 function contract(policy) {
   const file = path.join(policy.taskDir, 'task.md');
   const body = present(file) ? textFile(file) : '';
-  const missing = fields.filter(field => {
-    const matches = [...body.matchAll(new RegExp(`^## ${field}[ \\t]*\\r?\\n([\\s\\S]*?)(?=^## |$(?![\\s\\S]))`, 'gm'))];
-    return matches.length !== 1 || !matches[0][1].trim() || /^(작성 필요|TODO|미작성)$/i.test(matches[0][1].trim());
-  });
+  const missing = fields.filter(names => {
+    const matches = [...body.matchAll(new RegExp(`^## (?:${names.join('|')})[ \\t]*\\r?\\n([\\s\\S]*?)(?=^## |$(?![\\s\\S]))`, 'gm'))];
+    return matches.length !== 1 || !matches[0][1].trim() || /^(작성 필요|TODO|TBD|미작성)$/i.test(matches[0][1].trim());
+  }).map(names => names[0]);
   return { body, missing };
 }
 
@@ -205,8 +234,9 @@ function checkPolicyTool(event, ctx, context) {
     if (readTools.has(event.toolName)) return;
     const reason = executionReason(current);
     if (reason) return block(reason);
-    if (event.toolName === 'work_create') return; // 자체 대화 시작·부모·UI 확인 검사 사용
-    if (!p.taskDir) return block('작업에 연결되지 않았습니다. /work-init 후 해당 worktree에서 시작하세요.');
+    // OMP는 생성 도구를 write 전송으로도 호출한다. 실제 생성은 도구의 대화·부모·UI 검사에 맡긴다.
+    if (event.toolName === 'work_create' || (event.toolName === 'write' && event.input?.path === 'xd://work_create')) return;
+    if (!p.taskDir) return block('작업에 연결되지 않았습니다. /work-init 대화를 마쳤다면 work_create 도구(write의 xd://work_create 경로)로 생성하세요. 생성 후 안내된 worktree에서 시작하세요.');
     if (p.child && !p.isolated) return block('서브에이전트의 변경 실행은 .sub-workspace 격리 공간에서만 허용됩니다. 조회는 계속할 수 있습니다.');
     const docs = ['task.md', 'AGENTS.md'].map(n => path.join(p.taskDir, n));
     if (['write', 'edit'].includes(event.toolName)) {

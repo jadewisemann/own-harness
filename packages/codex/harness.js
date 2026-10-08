@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-export const RUNTIME = ['harness_common.js', 'steering-state.js', 'steering.js', 'work.js', 'work-hook.js', 'check-workspace.js', 'pr-guard.js', 'delegation.js'];
+export const RUNTIME = ['task-format.js', 'harness_common.js', 'steering-state.js', 'steering.js', 'work.js', 'work-hook.js', 'check-workspace.js', 'pr-guard.js', 'delegation.js'];
 export const SKILL = ['SKILL.md', 'LICENSE', 'references/workflows.md', 'references/principles.md', 'references/upstream.md', 'references/workspace.md'];
 export const PAYLOAD = ['harness.js', 'templates/AGENTS.fragment.md', ...RUNTIME.map(p => `runtime/${p}`), ...SKILL.map(p => `skills/pstack-codex/${p}`)];
 const LEGACY_PAYLOAD = ['harness.py', 'runtime/harness_common.py', 'runtime/work.py', 'runtime/work-hook.py', 'runtime/check-workspace', 'runtime/pr-guard.py'];
@@ -151,9 +151,10 @@ export function repositories(root, mapping) {
   }
   return found;
 }
-export function check_tracked(repo, root = null) {
+export function check_tracked(repo, root = null, legacy_work = []) {
   if (run_git(repo, 'ls-files', '--', '.harness', '.worktrees', '.codex/config.toml', '.codex/hooks.json', '.agents/skills/pstack-codex', 'AGENTS.override.md')) fail(`tracked private/local configuration is not changed: ${repo}`);
-  if (repo === root && run_git(repo, 'ls-files', '--', 'work')) fail(`tracked workspace work directory conflicts with task storage: ${repo}`);
+  if (!Array.isArray(legacy_work) || legacy_work.some(p => typeof p !== 'string' || !p.startsWith('work/') || p.split('/').includes('..'))) fail('invalid legacy work allowlist');
+  if (repo === root && run_git(repo, 'ls-files', '-z', '--', 'work').split('\0').filter(Boolean).some(p => !legacy_work.includes(p))) fail(`tracked workspace work directory conflicts with task storage: ${repo}`);
 }
 export function load_manifest(root) {
   const state = snapshot(path.join(root, '.harness/private/install.json'));
@@ -236,7 +237,7 @@ export function validate_manifest(root, manifest, repos) {
   const allowed_directories = new Set(), boundaries = new Set([...checkouts, ...Object.values(repos).map(repo => repo.common)]);
   for (const p of allowed) for (const parent of ancestors(p)) { if (boundaries.has(parent)) break; allowed_directories.add(parent); }
   if ((manifest.directories || []).some(p => !allowed_directories.has(absolute(p)))) fail('manifest directory is not installation-owned');
-  for (const repo of Object.values(repos)) for (const tree of repo.trees) check_tracked(tree, root);
+  for (const repo of Object.values(repos)) for (const tree of repo.trees) check_tracked(tree, root, manifest.legacy_work ?? []);
   for (const [p, entry] of Object.entries(manifest.files)) {
     const actual = absolute(p);
     if (!allowed.has(actual)) fail(`manifest path is no longer a managed path: ${p}`);
@@ -337,7 +338,7 @@ export function invalidate_approvals(root, changes) {
     }
   }
 }
-export function build(root, source, mapping, manifest, selected = null) {
+export function build(root, source, mapping, manifest, selected = null, legacy_work = []) {
   const repos = repositories(root, mapping);
   if (manifest) validate_manifest(root, manifest, repos);
   const [git_records, settings] = hook_settings(root, repos, manifest), payload = {};
@@ -355,7 +356,7 @@ export function build(root, source, mapping, manifest, selected = null) {
       }
     }
   }
-  for (const repo of Object.values(repos)) for (const tree of repo.trees) check_tracked(tree, root);
+  for (const repo of Object.values(repos)) for (const tree of repo.trees) check_tracked(tree, root, manifest?.legacy_work ?? legacy_work);
   const retired = manifest ? retired_checkouts(root, manifest, repos) : new Set();
   const files = manifest ? structuredClone(Object.fromEntries(Object.entries(manifest.files).filter(([p]) => !within(p, retired)))) : {};
   const changes = new Map();
@@ -400,7 +401,7 @@ export function build(root, source, mapping, manifest, selected = null) {
   const checkouts = { [root]: null };
   for (const [name, repo] of Object.entries(repos)) for (const tree of repo.trees) checkouts[tree] = name;
   for (const context of contexts) checkouts[context] = null;
-  const result = { schema: 1, workspace: root, repos: mapping, files, git: git_records, checkouts, task_roots: [...contexts].sort() };
+  const result = { schema: 1, workspace: root, repos: mapping, files, git: git_records, checkouts, legacy_work: manifest?.legacy_work ?? legacy_work, task_roots: [...contexts].sort() };
   const manifest_path = path.join(root, '.harness/private/install.json');
   const directories = new Set((manifest?.directories || []).filter(p => !within(p, retired)));
   for (const p of [...changes.keys(), manifest_path]) for (const parent of ancestors(p)) { if (exists(parent)) break; directories.add(parent); }
@@ -416,7 +417,7 @@ export function build(root, source, mapping, manifest, selected = null) {
   }
   return [changes, settings, verify, result];
 }
-export function install(root, source, { mapping = null, update = false, selected = null } = {}) {
+export function install(root, source, { mapping = null, update = false, selected = null, adopt_legacy_work = false } = {}) {
   root = absolute(root); source = absolute(source);
   if (!is_dir(root)) fail('workspace directory does not exist');
   const manifest = load_manifest(root);
@@ -431,7 +432,7 @@ export function install(root, source, { mapping = null, update = false, selected
     const private_dir = plain(path.join(folder, 'private'));
     if (exists(private_dir) && fs.readdirSync(private_dir).some(name => !['work', 'work-control', 'pr-approvals'].includes(name))) fail('unowned .harness/private content must be resolved first');
   }
-  const [changes, settings, verify, result] = build(root, source, mapping, manifest, selected);
+  const [changes, settings, verify, result] = build(root, source, mapping, manifest, selected, adopt_legacy_work && !manifest && Object.values(mapping).includes('.') ? run_git(root, 'ls-files', '-z', '--', 'work').split('\0').filter(Boolean) : []);
   if (manifest && !update && selected === null) for (const [p, state] of changes) {
     if (p !== path.join(root, '.harness/private/install.json') && Object.hasOwn(manifest.files, p) && !equal(digest(state), manifest.files[p].installed)) fail('package contents changed; use update');
   }
@@ -478,19 +479,20 @@ export function doctor(root) {
   return { status: !missing.length && !unprepared.length && !unprepared_tasks.length ? 'ok' : 'needs-attention', workspace: root, unprepared_checkouts: unprepared.sort(), unprepared_task_roots: unprepared_tasks.sort(), managed_files: Object.keys(manifest.files).length, missing_original_hooks: [...new Set(missing)].sort(), codex_trust: 'unverified', codex_event_delivery: 'unverified', global_hooks: 'unchanged; project and global hooks may both run' };
 }
 export function main(args = process.argv.slice(2)) {
-  const usage = 'Usage: bun harness.js {install|update|uninstall|doctor|prepare} ABSOLUTE_PATH [--repo NAME=RELATIVE_PATH]';
+  const usage = 'Usage: bun harness.js {install|update|uninstall|doctor|prepare} ABSOLUTE_PATH [--repo NAME=RELATIVE_PATH] [--adopt-legacy-work]';
   if (args.length === 1 && ['-h', '--help'].includes(args[0])) { console.log(usage); return 0; }
   const [command, root, ...rest] = args;
   try {
     if (!['install', 'update', 'uninstall', 'doctor', 'prepare'].includes(command) || !root) fail(usage);
-    const raw = [];
+    const raw = []; let adopt_legacy_work = false;
     for (let i = 0; i < rest.length; i++) {
+      if (command === 'install' && rest[i] === '--adopt-legacy-work') { adopt_legacy_work = true; continue; }
       if (command !== 'install' || rest[i] !== '--repo' || i + 1 >= rest.length) fail(usage);
       raw.push(rest[++i]);
     }
     const source = absolute(path.dirname(fileURLToPath(import.meta.url)));
     let result;
-    if (command === 'install') result = install(root, source, { mapping: raw.length ? repo_map(raw) : null });
+    if (command === 'install') result = install(root, source, { mapping: raw.length ? repo_map(raw) : null, adopt_legacy_work });
     else if (command === 'update') result = install(root, source, { update: true });
     else if (command === 'prepare') {
       if (path.basename(source) !== '.harness') fail('prepare must run through the installed .harness/harness.js');

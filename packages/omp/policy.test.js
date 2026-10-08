@@ -41,8 +41,31 @@ test('작업 지침 상속·저장소별 문맥·문서 준비 검사와 부모/
     expect(checkTool(event('write', { path: 'file.txt' }), main)?.block).toBe(true);
     expect(checkTool(event('bash'), { cwd: root })?.block).toBe(true);
     expect(checkTool(event('work_create'), { cwd: root })?.block).toBeUndefined();
+    for (const ctx of [{ cwd: root }, main]) {
+      expect(checkTool(event('write', { path: 'xd://work_create' }), ctx)?.block).toBeUndefined();
+      for (const target of ['task.md', 'xd://bash', 'xd://work_create/extra', 'xd://work_create?tool=bash']) {
+        expect(checkTool(event('write', { path: target }), ctx)?.block).toBe(true);
+      }
+    }
+    fs.writeFileSync(path.join(root, 'state.json'), '{"control":"human"}');
+    expect(checkTool(event('write', { path: 'xd://work_create' }), { cwd: root })?.block).toBe(true);
+    fs.writeFileSync(path.join(root, 'state.json'), '{');
+    expect(checkTool(event('write', { path: 'xd://work_create' }), { cwd: root })?.block).toBe(true);
+    fs.rmSync(path.join(root, 'state.json'));
     const body = ['목표', '범위', '비목표', '완료 조건', '설계 결정과 미정 사항'].map(h => `## ${h}\n\n구체적인 내용`).join('\n\n');
     fs.writeFileSync(taskFile, body);
+    fs.writeFileSync(taskFile, body.replace('비목표', '하지 않을 일').replace('설계 결정과 미정 사항', '결정 사항'));
+    expect(checkTool(event('write', { path: 'file.txt' }), main)?.block).toBeUndefined();
+    fs.appendFileSync(taskFile, '\n\n## 비목표\n\n중복 항목');
+    expect(checkTool(event('write', { path: 'file.txt' }), main)?.block).toBe(true);
+    fs.writeFileSync(taskFile, body);
+    const statePath = path.join(task, '.harness-state.json');
+    const legacyPath = path.join(task, '.own-harness-work.json');
+    const stateBody = fs.readFileSync(statePath, 'utf8');
+    fs.renameSync(statePath, legacyPath);
+    expect(policyFor(main).repo).toBe('frontend');
+    expect(fs.readFileSync(legacyPath, 'utf8')).toBe(stateBody);
+    fs.renameSync(legacyPath, statePath);
     expect(checkTool(event('write', { path: 'file.txt' }), main)?.block).toBeUndefined();
     expect(checkTool(event('bash'), main)?.block).toBeUndefined();
     expect(checkTool(event('write', { path: '../backend/file.txt' }), main)?.block).toBe(true);
@@ -91,7 +114,7 @@ test('작업 지침 상속·저장소별 문맥·문서 준비 검사와 부모/
     const ambiguous = { cwd: isolated, agent: { kind: 'sub', id: 'NewWorker', parentId: 'Main' } };
     expect(policyFor(ambiguous).repo).toBeUndefined();
     expect(checkTool(event('write', { path: 'file.txt' }), ambiguous)?.block).toBe(true);
-    fs.writeFileSync(path.join(task, '.own-harness-work.json'), '{}');
+    fs.writeFileSync(path.join(task, '.harness-state.json'), '{}');
     expect(checkTool(event('write', { path: 'file.txt' }), main)?.block).toBe(true);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

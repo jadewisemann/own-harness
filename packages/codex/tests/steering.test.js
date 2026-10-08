@@ -107,10 +107,11 @@ test('installed Codex hook resolves registered task/sub roots, keeps approvals a
       expect(() => steering.require_execution(checkout)).toThrow();
     }
     remove(task); put(task, {});
-    const forged = fs.readFileSync(record, 'utf8');
-    fs.writeFileSync(record, forged.replace('"repo": "project"', '"repo": "unknown"'));
+    const stateFile = path.join(task, '.harness-state.json');
+    const forged = fs.readFileSync(stateFile, 'utf8');
+    fs.writeFileSync(stateFile, forged.replace('"repo": "project"', '"repo": "unknown"'));
     expect(w.hook(event(sub, 'exec_command')).hookSpecificOutput.permissionDecision).toBe('deny');
-    fs.writeFileSync(record, forged);
+    fs.writeFileSync(stateFile, forged);
     const unknown = path.join(task, '.sub-workspace/unregistered'); fs.mkdirSync(unknown); put(unknown, { control: 'auto' });
     expect(w.hook(event(unknown, 'exec_command')).hookSpecificOutput.permissionDecision).toBe('deny');
     fs.mkdirSync(path.join(unknown, 'nested'));
@@ -126,7 +127,7 @@ test('installed Codex hook resolves registered task/sub roots, keeps approvals a
     expect(context(task)).toContain('CONTRACT CHANGED'); fs.renameSync(oldRecord, record);
     const legacy = path.join(task, '.worktrees/worker'); fs.mkdirSync(path.dirname(legacy), { recursive: true });
     git(baseline, 'worktree', 'move', worker, legacy);
-    fs.writeFileSync(record, fs.readFileSync(record, 'utf8').replaceAll(worker, legacy));
+    fs.writeFileSync(stateFile, fs.readFileSync(stateFile, 'utf8').replaceAll(worker, legacy));
     remove(legacy); put(legacy, { instruction: 'LEGACY CHILD' });
     expect(context(legacy)).toContain('LEGACY CHILD');
     git(legacy, 'add', 'state.json');
@@ -136,7 +137,7 @@ test('installed Codex hook resolves registered task/sub roots, keeps approvals a
     const keep = fs.readFileSync(path.join(root, 'state.json'), 'utf8');
     // Existing install lifecycle tests cover moved managed context; this fixture only needs payload update.
     git(baseline, 'worktree', 'move', legacy, worker);
-    fs.writeFileSync(record, fs.readFileSync(record, 'utf8').replaceAll(legacy, worker));
+    fs.writeFileSync(stateFile, fs.readFileSync(stateFile, 'utf8').replaceAll(legacy, worker));
     harness.install(root, source, { update: true });
     expect(fs.existsSync(path.join(root, '.harness/runtime/steering-state.js'))).toBe(true);
     harness.uninstall(root);

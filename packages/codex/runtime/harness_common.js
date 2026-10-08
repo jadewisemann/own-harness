@@ -9,6 +9,7 @@ const MODULE_PATH = fs.realpathSync(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(path.dirname(MODULE_PATH), '../..');
 export const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}(?![\s\S])/;
 export const TASK_RE = /^[a-z0-9][a-z0-9._-]{0,79}(?![\s\S])/;
+export const TASK_STATE = '.harness-state.json';
 
 export function require(condition, message) {
   if (!condition) throw new Error(message);
@@ -125,7 +126,7 @@ export function private_task_pattern(root = ROOT) {
   const names = fs.existsSync(config) ? Object.keys(JSON.parse(fs.readFileSync(config, 'utf8')).repos ?? {}) : [];
   require(names.every(name => NAME_RE.test(name)), '잘못된 저장소 이름입니다.');
   const folders = ['evidence', 'repos', '.worktrees', '.sub-workspace', ...names].map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-  return new RegExp('(?:^|[\\s("\'`<]|/)work[/\\\\][a-z0-9][a-z0-9._-]{0,79}[/\\\\](?:(?:(?:task|WORK)\\.md|state\\.json)(?:\\b|$)|(?:' + folders + ')(?:[/\\\\]|(?=$|[\\s"\'`)\\]<>])))', 'm');
+  return new RegExp('(?:^|[\\s("\'`<]|/)work[/\\\\][a-z0-9][a-z0-9._-]{0,79}[/\\\\](?:(?:(?:task|WORK)\\.md|state\\.json|\\.harness-state\\.json)(?:\\b|$)|(?:' + folders + ')(?:[/\\\\]|(?=$|[\\s"\'`)\\]<>])))', 'm');
 }
 
 export function task_work_path(task, root = ROOT) {
@@ -143,10 +144,18 @@ export function worker_paths(root, task, name, repo) {
 }
 
 export function task_registration(root, task) {
-  const text = fs.readFileSync(task_work_path(task, root), 'utf8');
+  const document = task_work_path(task, root);
+  const text = fs.readFileSync(document, 'utf8');
+  const state = safe_path(root, path.relative(root, path.dirname(document)), TASK_STATE);
   const blocks = [...text.matchAll(/<!-- own-harness-work:v1 -->\n```json\n([\s\S]*?)\n```\n<!-- \/own-harness-work -->/g)];
-  require(blocks.length === 1 && text.split('<!-- own-harness-work:v1 -->').length === 2 && text.split('<!-- /own-harness-work -->').length === 2, '작업 기록 metadata 블록이 없거나 중복·손상됐습니다.');
-  const data = JSON.parse(blocks[0][1]);
+  let data;
+  if (fs.existsSync(state)) {
+    require(!text.includes('<!-- own-harness-work:v1 -->') && !text.includes('<!-- /own-harness-work -->'), '작업 상태 파일과 metadata 블록이 중복됐습니다.');
+    data = JSON.parse(fs.readFileSync(state, 'utf8'));
+  } else {
+    require(blocks.length === 1 && text.split('<!-- own-harness-work:v1 -->').length === 2 && text.split('<!-- /own-harness-work -->').length === 2, '작업 기록 metadata 블록이 없거나 중복·손상됐습니다.');
+    data = JSON.parse(blocks[0][1]);
+  }
   require(object(data) && data.schema === 1 && data.task_id === task && object(data.repos) && Object.keys(data.repos).length, '작업 등록이 잘못됐습니다.');
   return data;
 }
@@ -206,7 +215,7 @@ export function checkout_info(cwd, task = null, root = ROOT, allow_baseline = fa
 
 export function policy_digest(root = ROOT) {
   load_config(root);
-  const names = ['harness_common.js', 'steering-state.js', 'steering.js', 'work.js', 'delegation.js', 'work-hook.js', 'pr-guard.js', 'check-workspace.js'];
+  const names = ['task-format.js', 'harness_common.js', 'steering-state.js', 'steering.js', 'work.js', 'delegation.js', 'work-hook.js', 'pr-guard.js', 'check-workspace.js'];
   const files = [safe_path(root, '.harness', 'config.json'), ...names.map(name => safe_path(root, '.harness', 'runtime', name))];
   require(files.every(is_file), '설치된 runtime 파일이 누락됐습니다.');
   return digest(Object.fromEntries(files.map(file => [path.relative(root, file), digest(fs.readFileSync(file))])));

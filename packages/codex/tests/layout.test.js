@@ -28,10 +28,9 @@ test('repository baselines, task and sub-workspace contexts retain lifecycle and
   const front = path.join(root, 'repository/frontend'), back = path.join(root, 'repository/backend'), reserved = path.join(root, 'repository/evidence'), reservedCase = path.join(root, 'repository/case-reserved');
   const task = path.join(root, 'work/feature-a'), record = path.join(task, 'task.md'), sub = path.join(task, '.sub-workspace/ui'), worker = path.join(sub, 'frontend');
   const mutate = transform => {
-    const text = fs.readFileSync(record, 'utf8');
-    const json = text.match(/<!-- own-harness-work:v1 -->\n```json\n([\s\S]*?)\n```/)[1];
-    const data = JSON.parse(json); transform(data);
-    fs.writeFileSync(record, text.replace(json, () => JSON.stringify(data, null, 2)));
+    const state = path.join(task, '.harness-state.json');
+    const data = JSON.parse(fs.readFileSync(state, 'utf8')); transform(data);
+    fs.writeFileSync(state, JSON.stringify(data, null, 2));
   };
   try {
     for (const baseline of [front, back, reserved, reservedCase]) {
@@ -68,13 +67,18 @@ test('repository baselines, task and sub-workspace contexts retain lifecycle and
     work('check', '--cwd', worker);
     denied('check', '--cwd', worker, '--publish');
     const original = fs.readFileSync(record, 'utf8');
+    const stateFile = path.join(task, '.harness-state.json'), originalState = fs.readFileSync(stateFile, 'utf8');
     for (const change of [data => data.workers.ui.repo = 'backend', data => data.workers.ui.checkout = path.join(task, 'frontend'), data => data.workers.ui.branch = 'main']) {
-      mutate(change); denied('check', '--cwd', worker); fs.writeFileSync(record, original);
+      mutate(change); denied('check', '--cwd', worker); fs.writeFileSync(stateFile, originalState);
     }
     for (const legacy of [path.join(task, 'WORK.md'), path.join(root, '.harness/private/work/feature-a/WORK.md')]) {
       put(legacy, original); denied('status', 'feature-a'); fs.unlinkSync(legacy);
-      fs.renameSync(record, legacy); expect(work('status', 'feature-a')).toContain(legacy); work('check', '--cwd', worker);
+      fs.renameSync(record, legacy);
+      const legacyState = path.join(path.dirname(legacy), '.harness-state.json');
+      if (legacyState !== stateFile) fs.renameSync(stateFile, legacyState);
+      expect(work('status', 'feature-a')).toContain(legacy); work('check', '--cwd', worker);
       expect(fs.existsSync(record)).toBe(false); fs.renameSync(legacy, record);
+      if (legacyState !== stateFile) fs.renameSync(legacyState, stateFile);
     }
     const publicFile = path.join(root, 'public.txt');
     for (const text of ['work/feature-a/state.json', 'work/feature-a/task.md', 'work/feature-a/frontend', 'work/feature-a/backend/code.txt', 'work/feature-a/.sub-workspace/ui/frontend']) {

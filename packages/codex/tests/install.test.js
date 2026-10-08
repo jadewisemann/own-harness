@@ -71,6 +71,20 @@ describe('installation', () => {
   });
   const install = (options = {}, workspace = root) => harness.install(workspace, package_root, options);
 
+  test('explicit legacy work adoption preserves existing tracked records but refuses new tracked task data', () => {
+    const record = path.join(root, 'work/old/WORK.md'); put(record, 'historical record');
+    git(root, 'add', 'work'); git(root, 'commit', '-m', 'history');
+    expect(() => install()).toThrow('tracked workspace work');
+    install({ adopt_legacy_work: true });
+    expect(harness.load_manifest(root).legacy_work).toEqual(['work/old/WORK.md']);
+    install({ update: true });
+    expect(fs.readFileSync(record, 'utf8')).toBe('historical record');
+    put(path.join(root, 'work/new/task.md'), 'new private record'); git(root, 'add', '-f', 'work/new/task.md');
+    expect(() => install({ update: true })).toThrow('tracked workspace work');
+    git(root, 'reset', '--', 'work/new/task.md');
+    harness.uninstall(root); expect(fs.readFileSync(record, 'utf8')).toBe('historical record');
+  });
+
   test('round trip and update preserve first values', () => {
     const old_hooks = { hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'echo fixture' }] }] }, other: 3 };
     put(path.join(root, '.codex/hooks.json'), JSON.stringify(old_hooks) + '\n', 0o640);

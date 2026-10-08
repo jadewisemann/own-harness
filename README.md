@@ -96,6 +96,8 @@ bun packages/codex/harness.js doctor /absolute/path/workspace
 - checkout의 `.codex/hooks.json`, 자동 메모리 주입을 끄는 `.codex/config.toml`.
 - `.agents/skills/pstack-codex`와 로컬 `AGENTS.override.md`의 짧은 관리 블록.
 
+기존 workspace에 Git이 추적하는 `work/` 기록이 있으면 기본 설치는 거절합니다. 기록을 보존하며 전환할 때만 `install --adopt-legacy-work`를 명시합니다. 설치 당시 경로만 허용하며 이후 새 작업 파일의 추적은 계속 거절합니다. 기존 저장소의 실제 위치는 `--repo` 매핑으로 유지할 수 있습니다.
+
 기존 내용과 최초 설정값을 기록하고, 충돌이나 관리 파일의 사용자 변경이 있으면 덮어쓰지 않습니다. 전역 설정, Git 작성자 정보, Codex 신뢰 상태는 자동 변경하지 않습니다. 기존 전역 훅은 계속 별도로 적용될 수 있습니다. 자세한 연결 경계는 [adapters.md](docs/adapters.md)에 있습니다.
 
 `AGENTS.md`는 수정하지 않습니다. 기존 untracked `AGENTS.override.md`는 본문을 보존하고, 추적 중인 override는 충돌로 거절합니다. Codex는 같은 폴더의 override를 우선 읽으므로 관리 블록은 원래 `AGENTS.md`를 먼저 읽도록 안내합니다. [공식 지침 탐색 문서](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
@@ -119,7 +121,8 @@ workspace/
 │   └── web/
 └── work/
     └── example-change/
-        ├── task.md                  # 작업 기록의 정본
+        ├── task.md                  # 사람이 읽는 작업 기록
+        ├── .harness-state.json       # Git 연결·단계·검증 상태
         ├── api/                     # 통합 worktree
         ├── web/
         ├── evidence/
@@ -128,7 +131,7 @@ workspace/
                 └── api/             # 서브에이전트 worktree
 ```
 
-`task.md` 하나에 계약·단계 근거와 병렬 작업의 담당·범위·결과를 보관합니다. 이 문서에서 WORK는 그 기록의 역할을 뜻합니다. 별도의 `agents/`, 에이전트별 `TASK.md`·`RESULT.md`는 만들지 않습니다. `work/<task>`와 등록된 `.sub-workspace/<name>`에도 로컬 지침·스킬·훅이 연결됩니다. 이 폴더 자체는 제품 Git 저장소가 아니며 회사 공통 지식은 작업 폴더 밖의 기존 저장 위치를 참조합니다. 새 저장소 매핑 이름으로 `evidence`·`repos`는 대소문자와 관계없이 사용하지 않습니다.
+`task.md`에는 사람이 읽는 목표·범위·하지 않을 일·완료 조건·결정 사항을 짧게 씁니다. 상세 자료는 별도 문서에 보존하고 링크합니다. Git 연결·단계 검증·서브에이전트 등록은 `.harness-state.json`에 보관하며 Codex와 OMP가 같은 저장소 매핑 형식을 읽습니다. 이 문서에서 WORK는 그 기록의 역할을 뜻합니다. 별도의 `agents/`, 에이전트별 `TASK.md`·`RESULT.md`는 만들지 않습니다. `work/<task>`와 등록된 `.sub-workspace/<name>`에도 로컬 지침·스킬·훅이 연결됩니다. 이 폴더 자체는 제품 Git 저장소가 아니며 회사 공통 지식은 작업 폴더 밖의 기존 저장 위치를 참조합니다. 새 저장소 매핑 이름으로 `evidence`·`repos`는 대소문자와 관계없이 사용하지 않습니다.
 
 설치한 뒤에는 **설치본**의 CLI를 사용합니다. 다음은 단일 저장소 예시입니다. 여러 저장소에서는 `--repo api`처럼 매핑 이름을 쓰고, 같은 작업에 필요한 저장소를 모두 등록한 뒤 계약을 확정합니다.
 
@@ -142,7 +145,7 @@ bun "$runtime/work.js" start "$task" --repo project --base origin/main --branch 
 
 `start`는 `work/<task>/<repo>`를 만들고 작업 폴더와 checkout의 로컬 설정을 준비한 뒤 WORK에 등록합니다. baseline의 미커밋 변경은 복사하지 않습니다. base는 로컬에서 해석 가능한 ref여야 하므로 필요하면 먼저 허용된 fetch로 갱신하세요. 제품 변경과 전달은 등록된 worktree에서 진행합니다.
 
-1. `work/example-change/task.md`의 **작업 계약**에 목표·범위·완료 조건을 실제 요청으로 채웁니다. 같은 문서를 정본으로 유지합니다.
+1. `work/example-change/task.md`의 **목표·범위·하지 않을 일·완료 조건·결정 사항**을 실제 요청으로 채웁니다. 같은 문서를 정본으로 유지합니다.
 2. 조사로 실제 호출·데이터 흐름을 확인합니다. 설계에서 선택 이유, 대안, 의존 작업, 병렬 가능 작업, 공유 상태 분리 방법을 정합니다. 각 단계의 실제 근거 파일을 만든 뒤 차례로 기록합니다.
 
 ```sh

@@ -74,7 +74,7 @@ test('runtime guards preserve offline work, approval, Git hook and delivery regr
         target = path.join(root, 'work', name, repo);
       }
       const file = w.work_path(name);
-      write(file, read(file).replace('목표: 작성 필요', '목표: 경로와 승인을 검증한다').replace('범위: 작성 필요', '범위: 등록된 파일과 검사').replace('완료 조건: 작성 필요', '완료 조건: 회귀 검사 통과'));
+      write(file, read(file).replaceAll('작성 필요', '실제 경로와 승인 검사를 완료한다'));
       return target;
     }
     function phases(name, through = 'verification') {
@@ -135,7 +135,9 @@ test('runtime guards preserve offline work, approval, Git hook and delivery regr
     const external = task('external', 'project', [], path.join(directory, '외부 위치'));
     const legacy_record = path.join(root, '.harness/private/work/external/WORK.md');
     fs.mkdirSync(path.dirname(legacy_record), { recursive: true });
-    fs.renameSync(w.work_path('external'), legacy_record);
+    const legacyText = read(w.work_path('external')), legacyData = read(w.state_path('external'));
+    fs.unlinkSync(w.state_path('external')); fs.unlinkSync(w.work_path('external'));
+    write(legacy_record, legacyText + '\n' + w.BEGIN + '\n```json\n' + legacyData.trim() + '\n```\n' + w.END + '\n');
     assert.equal(w.work_path('external'), legacy_record);
     phases('external');
     w.check(external, true);
@@ -347,7 +349,7 @@ test('invalid UTF-8 Git filenames fail closed before recording or checking evide
     const w = await module(path.join(runtime, 'work.js'));
     w.init('bytes', checkout, 'main', []);
     const file = w.work_path('bytes');
-    write(file, read(file).replace('목표: 작성 필요', '목표: 실제 파일 내용을 검증한다').replace('범위: 작성 필요', '범위: 저장소 파일').replace('완료 조건: 작성 필요', '완료 조건: 지원하지 않는 파일명은 차단한다'));
+    write(file, read(file).replaceAll('작성 필요', '실제 경로와 승인 검사를 완료한다'));
     const bom_name = '\ufeffvalid.txt';
     const bom_file = path.join(checkout, bom_name);
     write(bom_file, 'initial BOM-named content\n');
